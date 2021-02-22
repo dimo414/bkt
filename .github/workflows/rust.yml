@@ -11,38 +11,8 @@ jobs:
     - uses: actions-rs/clippy-check@v1
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-        args: --all-targets  --all-features
+        args: --all-targets --all-features
     - name: Check
       run: cargo check --all-targets --verbose
     - name: Run tests
       run: cargo test --verbose
-
-  CD:
-    runs-on: ubuntu-latest
-    needs: CI
-    strategy:
-      fail-fast: false
-      matrix:
-        arch:
-          - { target: arm-unknown-linux-gnueabihf , use-cross: true }
-          - { target: i686-unknown-linux-gnu , use-cross: true }
-          - { target: x86_64-unknown-linux-gnu }
-    steps:
-      - uses: actions/checkout@v2
-      - name: Extract crate information
-        shell: bash
-        run: |
-          echo "PROJECT_NAME=$(sed -n 's/^name = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_ENV"
-          echo "PROJECT_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)" >> "$GITHUB_ENV"
-      - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: ${{ matrix.arch.use-cross }}
-          command: build
-          args: --release --target=${{ matrix.arch.target }}
-
-      - name: Upload package artifact
-        uses: actions/upload-artifact@master
-        with:
-          name: '${{ env.PROJECT_NAME }}.v${{ env.PROJECT_VERSION }}.${{ matrix.arch.target }}'
-          path: 'target/${{ matrix.arch.target }}/release/${{ env.PROJECT_NAME }}'
