@@ -1,16 +1,16 @@
 #[macro_use] extern crate clap;
 
 use std::fmt;
+use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{self, Write, BufReader, ErrorKind, BufWriter};
-use std::process::{Command, exit};
 use std::path::PathBuf;
+use std::process::{Command, exit, Child};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use clap::{Arg, App};
 use serde::{Serialize, Deserialize};
-use std::hash::{Hash, Hasher};
-use std::fs::File;
-use std::time::{Duration, Instant, SystemTime};
 
 // See https://doc.rust-lang.org/std/fs/fn.soft_link.html
 #[cfg(windows)]
@@ -69,7 +69,7 @@ struct Invocation {
     stderr: Vec<u8>,
     status: i32,
     runtime: Duration,
-    completed: SystemTime,
+    completed: SystemTime, // Note: Instant is not serializable
 }
 
 struct Cache {
@@ -93,27 +93,32 @@ impl Cache {
     }
 
     #[cfg(not(feature = "debug"))]
-    fn serialize<W, T>(writer: W, value: &T) -> Result<()> where W: io::Write, T: ?Sized + Serialize {
+    fn serialize<W, T>(writer: W, value: &T) -> Result<()>
+            where W: io::Write, T: ?Sized + Serialize {
         Ok(bincode::serialize_into(writer, value)?)
     }
 
     #[cfg(feature = "debug")]
-    fn serialize<W, T>(writer: W, value: &T) -> Result<()> where W: io::Write, T: ?Sized + Serialize {
+    fn serialize<W, T>(writer: W, value: &T) -> Result<()>
+            where W: io::Write, T: ?Sized + Serialize {
         Ok(serde_json::to_writer(writer, value)?)
     }
 
     #[cfg(not(feature = "debug"))]
-    fn deserialize<R, T>(reader: R) -> Result<T> where R: std::io::Read, T: serde::de::DeserializeOwned {
+    fn deserialize<R, T>(reader: R) -> Result<T>
+            where R: std::io::Read, T: serde::de::DeserializeOwned {
         Ok(bincode::deserialize_from(reader)?)
     }
 
     #[cfg(feature = "debug")]
-    fn deserialize<R, T>(reader: R) -> Result<T> where R: std::io::Read, T: serde::de::DeserializeOwned {
+    fn deserialize<R, T>(reader: R) -> Result<T>
+            where R: std::io::Read, T: serde::de::DeserializeOwned {
         Ok(serde_json::from_reader(reader)?)
     }
 
-    fn lookup(&self, command: &CommandDesc) -> Result<Option<Invocation>> {
-        let file = File::open(self.key_dir.join(command.cache_key()));
+    fn lookup(&self, command: &CommandDesc, max_age: Duration) -> Result<Option<Invocation>> {
+        let path = self.key_dir.join(command.cache_key());
+        let file = File::open(&path);
         if let Err(ref e) = file {
             if e.kind() == ErrorKind::NotFound {
                 return Ok(None);
@@ -121,14 +126,18 @@ impl Cache {
         }
         // Missing file is OK; other errors get propagated to the caller
         let reader = BufReader::new(file.context("Failed to access cache file")?);
-        let found: Option<Invocation> = Cache::deserialize(reader).map(Some)?;
-        // Discard data that happened to collide with the hash code
-        if let Some(ref found) = found {
-            if &found.command != command {
-                return Ok(None);
-            }
+        let found: Invocation = Cache::deserialize(reader)?;
+        // Discard data that is too old
+        let elapsed = found.completed.elapsed();
+        if elapsed.is_err() || elapsed.unwrap() > max_age {
+            std::fs::remove_file(&path).context("Failed to remove expired invocation data")?;
+            return Ok(None);
         }
-        Ok(found)
+        // Ignore false-positive hits that happened to collide with the hash code
+        if &found.command != command {
+            return Ok(None);
+        }
+        Ok(Some(found))
     }
 
     fn store(&self, invocation: &Invocation, ttl: &Duration) -> Result<()> {
@@ -169,11 +178,23 @@ fn execute_subprocess(command: CommandDesc) -> Result<Invocation> {
     })
 }
 
+fn force_background_update() -> Result<Child> {
+    let mut args = std::env::args_os();
+    let arg0 = args.next().expect("Must always be a 0th argument");
+    let mut command = match std::env::current_exe() {
+        Ok(path) => Command::new(path),
+        Err(_) => Command::new(arg0),
+    };
+    command.arg("--force_update").args(args);
+    command.spawn().context("Failed to start background process")
+}
+
 struct AppState {
     cache: Cache,
     command: CommandDesc,
     ttl: Duration,
     stale: Option<Duration>,
+    force_update: bool,
 }
 
 // Looks up a command in the cache, outputting its stdout/stderr if found. Otherwise executes
@@ -181,10 +202,14 @@ struct AppState {
 // exit status is returned, or an error message if either the cache could not be accessed or the
 // subprocess could not be run.
 fn run(state: AppState) -> Result<i32> {
-    let cached = state.cache.lookup(&state.command)?;
-    // Although atypical, it's possible for a caller to specify a different TTL than the command
-    // was cached with, so we exclude such results here instead of within the Cache.
-    let cached = cached.filter(|i| i.completed + state.ttl > SystemTime::now());
+    // Warm the cache and return; nothing should be written to out/err
+    if state.force_update {
+        let result = execute_subprocess(state.command)?;
+        state.cache.store(&result, &state.ttl)?;
+        return Ok(0);
+    }
+
+    let cached = state.cache.lookup(&state.command, state.ttl)?;
     let invocation = match cached {
         Some(cached) => cached,
         None => {
@@ -195,14 +220,17 @@ fn run(state: AppState) -> Result<i32> {
     };
 
     if let Some(stale) = state.stale {
-        if invocation.completed.elapsed().expect("BUG") > stale {
-            // TODO warm cache
+        let elapsed = invocation.completed.elapsed();
+        if elapsed.is_err() || elapsed.unwrap() > stale {
+            // Intentionally drop the returned Child; this process will exit momentarily and the
+            // child process will continue running in the background.
+            force_background_update()?;
         }
     }
 
     io::stdout().write_all(&invocation.stdout).unwrap();
     io::stderr().write_all(&invocation.stderr).unwrap();
-    // TODO delete expired data, see https://crates.io/crates/walkdir
+    // TODO occasionally clean up cache dir, see https://crates.io/crates/walkdir
     Ok(invocation.status)
 }
 
@@ -222,20 +250,31 @@ fn main() {
             .help("Duration the cached result will be valid"))
         .arg(Arg::with_name("stale")
             .long("stale")
+            .takes_value(true)
             .help("Duration after which the cached result will be asynchronously refreshed"))
         .arg(Arg::with_name("cache_dir")
             .long("cache_dir")
-            .help("The directory under which to persist cached invocations; defaults to the system's temp directory"))
+            .takes_value(true)
+            .help("The directory under which to persist cached invocations; defaults to the \
+                   system's temp directory. Setting this to a directory backed by RAM or an SSD, \
+                   such as a tmpfs partition, will significantly reduce caching overhead."))
         .arg(Arg::with_name("cache_key")
             .long("cache_scope")
-            .help("If set all cached data will be scoped to this value, preventing collisions with commands cached with different scopes"))
+            .takes_value(true)
+            .help("If set, all cached data will be scoped to this value, preventing collisions \
+                   with commands cached with different scopes"))
+        .arg(Arg::with_name("force_update")
+            .long("force_update")
+            .takes_value(false)
+            .hidden(true))
         .get_matches();
 
     // https://github.com/clap-rs/clap/discussions/2453
     let stale = matches.value_of("stale")
         .map(|v|
             v.parse::<humantime::Duration>()
-                .map_err(|v| ::clap::Error::value_validation_auto(format!("The argument '{}' isn't a valid value", v)))
+                .map_err(|v| ::clap::Error::value_validation_auto(
+                    format!("The argument '{}' isn't a valid value", v)))
                 .unwrap_or_else(|e| e.exit())
                 .into());
 
@@ -244,6 +283,7 @@ fn main() {
         command: CommandDesc::new(matches.values_of("command").expect("Required").collect::<Vec<_>>()),
         ttl: value_t_or_exit!(matches.value_of("ttl"), humantime::Duration).into(),
         stale,
+        force_update: matches.is_present("force_update"),
     };
 
     match run(state) {
