@@ -189,6 +189,8 @@ fn force_background_update() -> Result<Child> {
     command.spawn().context("Failed to start background process")
 }
 
+// TODO refactor most of this out to a Bkt struct in lib.rs, leaving just the CLI logic in a binary
+// https://stackoverflow.com/a/26953326/113632
 struct AppState {
     cache: Cache,
     command: CommandDesc,
@@ -258,7 +260,7 @@ fn main() {
             .help("The directory under which to persist cached invocations; defaults to the \
                    system's temp directory. Setting this to a directory backed by RAM or an SSD, \
                    such as a tmpfs partition, will significantly reduce caching overhead."))
-        .arg(Arg::with_name("cache_key")
+        .arg(Arg::with_name("cache_scope")
             .long("cache_scope")
             .takes_value(true)
             .help("If set, all cached data will be scoped to this value, preventing collisions \
