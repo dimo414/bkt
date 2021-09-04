@@ -2,17 +2,18 @@ use std::process::Command;
 
 use test_dir::{TestDir, DirBuilder};
 use std::path::Path;
+use std::time::{SystemTime, Duration};
+
+use anyhow::Result;
 
 // Bash scripts to pass to -c.
 // Avoid depending on external programs.
-const ECHO_RANDOM: &str = "echo \"$RANDOM\";";
 const COUNT_INVOCATIONS: &str = "file=${1:?} lines=0;
                                  printf '%s' '.' >> \"$file\";\
                                  read < \"$file\";\
                                  printf '%s' \"${#REPLY}\";";
 const PRINT_ARGS: &str = "args=(\"$@\"); declare -p args;";
 const EXIT_WITH: &str = "exit \"${1:?}\";";
-const SENSITIVE_OUTPUT: &str = "printf 'foo\\0bar'; printf 'bar\\0baz\\n' >&2";
 
 fn bkt(cache_dir: &Path) -> Command {
     let test_exe = std::env::current_exe().expect("Could not resolve test location");
@@ -52,6 +53,25 @@ fn succeed(cmd: &mut Command) -> String {
     result.out
 }
 
+fn modtime(path: &Path) -> SystemTime {
+    std::fs::metadata(&path).expect("No metadata").modified().expect("No modtime")
+}
+
+fn make_dir_stale(dir: &Path, desired_time: &SystemTime) -> Result<()> {
+    let stale_time = filetime::FileTime::from_system_time(*desired_time);
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        let last_modified = modtime(&path);
+
+        if path.is_file() && last_modified > *desired_time {
+            filetime::set_file_mtime(&path, stale_time)?;
+        } else if path.is_dir() {
+            make_dir_stale(&path, desired_time)?;
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn help() {
     let dir = TestDir::temp();
@@ -62,13 +82,90 @@ fn help() {
 #[test]
 fn cached() {
     let dir = TestDir::temp();
-    let args = vec!("--", "bash", "-c", ECHO_RANDOM);
+    let file = dir.path("file").display().to_string();
+    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file);
     let first_result = run(bkt(&dir.path("cache")).args(&args));
 
     for _ in 1..3 {
         let subsequent_result = run(bkt(&dir.path("cache")).args(&args));
         assert_eq!(first_result, subsequent_result);
     }
+}
+
+#[test]
+fn cache_expires() {
+    let dir = TestDir::temp();
+    let file = dir.path("file").display().to_string();
+    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file);
+    let first_result = succeed(bkt(&dir.path("cache")).args(&args));
+    assert_eq!(first_result, "1");
+
+    let subsequent_result = succeed(bkt(&dir.path("cache")).args(&args));
+    assert_eq!(first_result, subsequent_result);
+
+    make_dir_stale(&dir.path("cache"), &(SystemTime::now() - Duration::from_secs(120))).unwrap();
+    let after_stale_result = succeed(bkt(&dir.path("cache")).args(&args));
+    assert_eq!(after_stale_result, "2");
+}
+
+#[test]
+fn cache_expires_separately() {
+    let dir = TestDir::temp();
+    let file1 = dir.path("file1").display().to_string();
+    let file2 = dir.path("file2").display().to_string();
+    let args1 = vec!("--ttl=10s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file1);
+    let args2 = vec!("--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file2);
+
+    // first invocation
+    assert_eq!(succeed(bkt(&dir.path("cache")).args(&args1)), "1");
+    assert_eq!(succeed(bkt(&dir.path("cache")).args(&args2)), "1");
+
+    // second invocation, cached
+    assert_eq!(succeed(bkt(&dir.path("cache")).args(&args1)), "1");
+    assert_eq!(succeed(bkt(&dir.path("cache")).args(&args2)), "1");
+
+    // only shorter TTL is invalidated
+    make_dir_stale(&dir.path("cache"), &(SystemTime::now() - Duration::from_secs(15))).unwrap();
+    assert_eq!(succeed(bkt(&dir.path("cache")).args(&args1)), "2");
+    assert_eq!(succeed(bkt(&dir.path("cache")).args(&args2)), "1");
+}
+
+#[test]
+fn cache_hits_with_different_settings() {
+    let dir = TestDir::temp();
+    let file = dir.path("file1").display().to_string();
+    let args1 = vec!("--ttl=10s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file);
+    let args2 = vec!("--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file);
+
+    // despite different TTLs the invocation is still cached
+    assert_eq!(succeed(bkt(&dir.path("cache")).args(&args1)), "1");
+    assert_eq!(succeed(bkt(&dir.path("cache")).args(&args2)), "1");
+
+    // the provided TTL is respected, though it was cached with a smaller TTL
+    make_dir_stale(&dir.path("cache"), &(SystemTime::now() - Duration::from_secs(15))).unwrap();
+    assert_eq!(succeed(bkt(&dir.path("cache")).args(&args2)), "1");
+    // TODO however the cache may be invalidated in the background using the older TTL
+}
+
+#[test]
+fn cache_refreshes_in_background() {
+    let dir = TestDir::temp();
+    let file = dir.path("file");
+    let file_str = file.display().to_string();
+    let args = vec!("--stale=10s", "--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file_str);
+    assert_eq!(succeed(bkt(&dir.path("cache")).args(&args)), "1");
+
+    let last_mod = modtime(&file);
+    make_dir_stale(&dir.path("cache"), &(SystemTime::now() - Duration::from_secs(15))).unwrap();
+    assert_eq!(succeed(bkt(&dir.path("cache")).args(&args)), "1");
+
+    for _ in 1..10 {
+        if modtime(&file) > last_mod { break; }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(modtime(&file) > last_mod);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "..");
+    assert_eq!(succeed(bkt(&dir.path("cache")).args(&args)), "2");
 }
 
 #[test]
@@ -142,6 +239,7 @@ fn output_preserved() {
             succeed(bkt(&dir.path("cache")).args(&bkt_args).args(args)),
             succeed(bkt(&dir.path("cache")).args(&bkt_args).args(args)));
     }
+
     same_output(&dir, &[]);
     same_output(&dir, &[""]);
     same_output(&dir, &["a", "b"]);
@@ -152,7 +250,7 @@ fn output_preserved() {
 #[test]
 fn sensitive_output() {
     let dir = TestDir::temp();
-    let args = vec!("--", "bash", "-c", SENSITIVE_OUTPUT);
+    let args = vec!("--", "bash", "-c", "printf 'foo\\0bar'; printf 'bar\\0baz\\n' >&2");
 
     // Not cached
     let output = run(bkt(&dir.path("cache")).args(&args));
@@ -174,9 +272,6 @@ fn exit_code_preserved() {
 // TODO
 // respects env
 // respects cwd
-// refresh cache in background
-// cache expires
-// differing cache expirations
 // concurrent calls race
 // cleanup stale cache data
 // warm cache

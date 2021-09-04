@@ -68,8 +68,7 @@ struct Invocation {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     status: i32,
-    runtime: Duration,
-    completed: SystemTime, // Note: Instant is not serializable
+    runtime: Duration, // TODO is this useful?
 }
 
 struct Cache {
@@ -116,7 +115,8 @@ impl Cache {
         Ok(serde_json::from_reader(reader)?)
     }
 
-    fn lookup(&self, command: &CommandDesc, max_age: Duration) -> Result<Option<Invocation>> {
+    fn lookup(&self, command: &CommandDesc, max_age: Duration)
+            -> Result<Option<(Invocation, SystemTime)>> {
         let path = self.key_dir.join(command.cache_key());
         let file = File::open(&path);
         if let Err(ref e) = file {
@@ -128,7 +128,8 @@ impl Cache {
         let reader = BufReader::new(file.context("Failed to access cache file")?);
         let found: Invocation = Cache::deserialize(reader)?;
         // Discard data that is too old
-        let elapsed = found.completed.elapsed();
+        let mtime = std::fs::metadata(&path)?.modified()?;
+        let elapsed = mtime.elapsed();
         if elapsed.is_err() || elapsed.unwrap() > max_age {
             std::fs::remove_file(&path).context("Failed to remove expired invocation data")?;
             return Ok(None);
@@ -137,7 +138,7 @@ impl Cache {
         if &found.command != command {
             return Ok(None);
         }
-        Ok(Some(found))
+        Ok(Some((found, mtime)))
     }
 
     fn store(&self, invocation: &Invocation, ttl: &Duration) -> Result<()> {
@@ -166,7 +167,6 @@ fn execute_subprocess(command: CommandDesc) -> Result<Invocation> {
     let result = cmd.output()
         .with_context(|| format!("Failed to run command {}", command))?;
     let runtime = start.elapsed();
-    let completed = SystemTime::now();
     Ok(Invocation {
         command,
         stdout: result.stdout,
@@ -174,7 +174,6 @@ fn execute_subprocess(command: CommandDesc) -> Result<Invocation> {
         // TODO handle signals, see https://stackoverflow.com/q/66272686
         status: result.status.code().unwrap_or(126),
         runtime,
-        completed,
     })
 }
 
@@ -194,6 +193,7 @@ fn force_background_update() -> Result<Child> {
 struct AppState {
     cache: Cache,
     command: CommandDesc,
+    // TODO enforce that stale < ttl and both are non-zero
     ttl: Duration,
     stale: Option<Duration>,
     force_update: bool,
@@ -212,18 +212,17 @@ fn run(state: AppState) -> Result<i32> {
     }
 
     let cached = state.cache.lookup(&state.command, state.ttl)?;
-    let invocation = match cached {
-        Some(cached) => cached,
+    let (invocation, age) = match cached {
+        Some((cached, mtime)) => (cached, mtime.elapsed()?),
         None => {
             let result = execute_subprocess(state.command)?;
             state.cache.store(&result, &state.ttl)?;
-            result
+            (result, Duration::default())
         }
     };
 
     if let Some(stale) = state.stale {
-        let elapsed = invocation.completed.elapsed();
-        if elapsed.is_err() || elapsed.unwrap() > stale {
+        if age > stale {
             // Intentionally drop the returned Child; this process will exit momentarily and the
             // child process will continue running in the background.
             force_background_update()?;
