@@ -42,13 +42,44 @@ impl CommandDesc {
     }
 }
 
+// TODO consider removing Display from CommandDesc; not clear this is very informative
 impl fmt::Display for CommandDesc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.args[0])
     }
 }
 
-// TODO helpers to get out/err as strings
+#[cfg(test)]
+mod cmd_tests {
+    use super::*;
+
+    // Sanity-checking that CommandDesc::cache_key isn't changing over time. This test may need
+    // to be updated if the implementation changes in the future.
+    #[test]
+    fn stable_hash() {
+        assert_eq!(CommandDesc::new(vec!("foo", "bar")).cache_key(), "13EFD84004DBAD3A");
+    }
+
+    #[test]
+    fn collisions() {
+        let commands = vec!(
+            CommandDesc::new(vec!("foo")),
+            CommandDesc::new(vec!("foo", "bar")),
+            CommandDesc::new(vec!("foo", "b", "ar")),
+            CommandDesc::new(vec!("foo", "b ar")),
+        );
+
+        // https://old.reddit.com/r/rust/comments/2koptu/best_way_to_visit_all_pairs_in_a_vec/clnhxr5/
+        let mut iter = commands.iter();
+        for a in commands.iter() {
+            iter.next();
+            for b in iter.clone() {
+                assert_ne!(a.cache_key(), b.cache_key(), "{:?} and {:?} have equivalent hashes", a, b);
+            }
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Invocation {
     command: CommandDesc, // just used for cache key validation
@@ -56,6 +87,16 @@ pub struct Invocation {
     pub stderr: Vec<u8>,
     pub status: i32,
     pub runtime: Duration,
+}
+
+impl Invocation {
+    pub fn stdout_utf8(&self) -> &str {
+        std::str::from_utf8(&self.stdout).expect("stdout not valid UTF-8")
+    }
+
+    pub fn stderr_utf8(&self) -> &str {
+        std::str::from_utf8(&self.stderr).expect("stderr not valid UTF-8")
+    }
 }
 
 struct FileLock {
@@ -101,6 +142,36 @@ impl Drop for FileLock {
     }
 }
 
+#[cfg(test)]
+mod file_lock_tests {
+    use super::*;
+    use test_dir::{TestDir, DirBuilder};
+
+    #[test]
+    fn locks() {
+        let dir = TestDir::temp();
+        let lock = FileLock::try_acquire(&dir.root(), "test", Duration::from_secs(100)).unwrap();
+        let lock = lock.expect("Could not take lock");
+        assert!(dir.path("test.lock").exists());
+        std::mem::drop(lock);
+        assert!(!dir.path("test.lock").exists());
+    }
+
+    #[test]
+    fn already_locked() {
+        let dir = TestDir::temp();
+        let lock = FileLock::try_acquire(&dir.root(), "test", Duration::from_secs(100)).unwrap();
+        let lock = lock.expect("Could not take lock");
+
+        let attempt = FileLock::try_acquire(&dir.root(), "test", Duration::from_secs(100)).unwrap();
+        assert!(attempt.is_none());
+
+        std::mem::drop(lock);
+        let attempt = FileLock::try_acquire(&dir.root(), "test", Duration::from_secs(100)).unwrap();
+        assert!(attempt.is_some());
+    }
+}
+
 // See https://doc.rust-lang.org/std/fs/fn.soft_link.html
 #[cfg(windows)]
 use std::os::windows::fs::symlink_file as symlink;
@@ -116,10 +187,7 @@ struct Cache {
 }
 
 impl Cache {
-    fn new(root_dir: Option<&str>, scope: Option<&str>) -> Cache {
-        let root_dir = root_dir.map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        // Note the cache is invalidated when the minor version changes
-        let cache_dir = root_dir.join(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")));
+    fn new(cache_dir: &Path, scope: Option<&str>) -> Cache {
         let mut key_dir = cache_dir.join("keys");
         if let Some(scope) = scope {
             let scope = Path::new(scope);
@@ -127,7 +195,7 @@ impl Cache {
             key_dir.push(scope);
         }
         let data_dir = cache_dir.join("data");
-        Cache{ cache_dir, key_dir, data_dir }
+        Cache{ cache_dir: cache_dir.into(), key_dir, data_dir }
     }
 
     #[cfg(not(feature = "debug"))]
@@ -201,6 +269,14 @@ impl Cache {
     }
 
     fn cleanup(&self) -> Result<()> {
+        fn delete_stale_file(file: &Path, ttl: Duration) -> Result<()> {
+            let age = std::fs::metadata(file)?.modified()?.elapsed()?;
+            if age > ttl {
+                std::fs::remove_file(&file)?;
+            }
+            Ok(())
+        }
+
         if let Some(_lock) = FileLock::try_acquire(&self.cache_dir, "cleanup", Duration::from_secs(60*10))? {
             // Don't bother if cleanup has been attempted recently
             let last_attempt_file = self.cache_dir.join("last_cleanup");
@@ -222,7 +298,7 @@ impl Cache {
                     let file = entry?.path();
                     // Disregard errors on individual files; typically due to concurrent deletion
                     // or other changes we don't care about.
-                    let _ = Cache::delete_stale_file(&file, ttl);
+                    let _ = delete_stale_file(&file, ttl);
                 }
             }
 
@@ -243,13 +319,125 @@ impl Cache {
         }
         Ok(())
     }
+}
 
-    fn delete_stale_file(file: &Path, ttl: Duration) -> Result<()> {
-        let age = std::fs::metadata(file)?.modified()?.elapsed()?;
-        if age > ttl {
-            std::fs::remove_file(&file)?;
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use test_dir::{TestDir, DirBuilder};
+
+    fn modtime(path: &Path) -> SystemTime {
+        std::fs::metadata(&path).expect("No metadata").modified().expect("No modtime")
+    }
+
+    fn make_dir_stale(dir: &Path, age: Duration) -> Result<()> {
+        let desired_time = SystemTime::now() - age;
+        let stale_time = filetime::FileTime::from_system_time(desired_time);
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            let last_modified = modtime(&path);
+
+            if path.is_file() && last_modified > desired_time {
+                filetime::set_file_mtime(&path, stale_time)?;
+            } else if path.is_dir() {
+                make_dir_stale(&path, age)?;
+            }
         }
         Ok(())
+    }
+
+    fn dir_contents(dir: &Path) -> Vec<String> {
+        fn contents(dir: &Path, ret: &mut Vec<PathBuf>) -> Result<()> {
+            for entry in std::fs::read_dir(&dir)? {
+                let path = entry?.path();
+                if path.is_dir() {
+                    contents(&path, ret)?;
+                } else {
+                    ret.push(path);
+                }
+            }
+            Ok(())
+        }
+        let mut paths = vec!();
+        contents(dir, &mut paths).unwrap();
+        paths.iter().map(|p| p.strip_prefix(dir).unwrap().display().to_string()).collect()
+    }
+
+    fn inv(cmd: &CommandDesc, stdout: &str) -> Invocation {
+        Invocation{
+            command: cmd.clone(), stdout: stdout.into(),
+            stderr: "".into(), status: 0, runtime: Duration::from_secs(0), }
+    }
+
+    #[test]
+    fn cache() {
+        let dir = TestDir::temp();
+        let cmd = CommandDesc::new(vec!("foo"));
+        let inv = inv(&cmd, "A");
+        let cache = Cache::new(&dir.root(), None);
+
+        let absent = cache.lookup(&cmd, Duration::from_secs(100)).unwrap();
+        assert!(absent.is_none());
+
+        cache.store(&inv, Duration::from_secs(100)).unwrap();
+        let present = cache.lookup(&cmd, Duration::from_secs(100)).unwrap();
+        assert_eq!(present.unwrap().0.stdout_utf8(), "A");
+    }
+
+    #[test]
+    fn lookup_ttls() {
+        let dir = TestDir::temp();
+        let cmd = CommandDesc::new(vec!("foo"));
+        let inv = inv(&cmd, "A");
+        let cache = Cache::new(&dir.root(), None);
+
+        cache.store(&inv, Duration::from_secs(5)).unwrap(); // store duration doesn't affect lookups
+        make_dir_stale(dir.root(), Duration::from_secs(15)).unwrap();
+
+        // data is still present until a cleanup iteration runs, or a lookup() invalidates it
+        let present = cache.lookup(&cmd, Duration::from_secs(20)).unwrap();
+        assert_eq!(present.unwrap().0.stdout_utf8(), "A");
+        // lookup() finds stale data, deletes it
+        let absent = cache.lookup(&cmd, Duration::from_secs(10)).unwrap();
+        assert!(absent.is_none());
+        // now data is gone, even though this lookup() would have accepted it
+        let absent = cache.lookup(&cmd, Duration::from_secs(20)).unwrap();
+        assert!(absent.is_none());
+    }
+
+    #[test]
+    fn scoped() {
+        let dir = TestDir::temp();
+        let cmd = CommandDesc::new(vec!("foo"));
+        let inv_a = inv(&cmd, "A");
+        let inv_b = inv(&cmd, "B");
+        let cache = Cache::new(&dir.root(), None);
+        let cache_scoped = Cache::new(&dir.root(), Some("scope"));
+
+        cache.store(&inv_a, Duration::from_secs(100)).unwrap();
+        cache_scoped.store(&inv_b, Duration::from_secs(100)).unwrap();
+
+        let present = cache.lookup(&cmd, Duration::from_secs(20)).unwrap();
+        assert_eq!(present.unwrap().0.stdout_utf8(), "A");
+        let present_scoped = cache_scoped.lookup(&cmd, Duration::from_secs(20)).unwrap();
+        assert_eq!(present_scoped.unwrap().0.stdout_utf8(), "B");
+    }
+
+    #[test]
+    fn cleanup() {
+        let dir = TestDir::temp();
+        let cmd = CommandDesc::new(vec!("foo"));
+        let inv = inv(&cmd, "A");
+        let cache = Cache::new(&dir.root(), None);
+
+        cache.store(&inv, Duration::from_secs(5)).unwrap();
+        make_dir_stale(dir.root(), Duration::from_secs(10)).unwrap();
+        cache.cleanup().unwrap();
+
+        assert_eq!(dir_contents(dir.root()), vec!("last_cleanup")); // keys and data dirs are now empty
+
+        let absent = cache.lookup(&cmd, Duration::from_secs(20)).unwrap();
+        assert!(absent.is_none());
     }
 }
 
@@ -266,9 +454,13 @@ impl Bkt {
         Bkt::create(None, Some(scope))
     }
 
-    pub fn create(root_dir: Option<&str>, scope: Option<&str>) -> Bkt {
+    pub fn create(root_dir: Option<PathBuf>, scope: Option<&str>) -> Bkt {
+        // Note the cache is invalidated when the minor version changes
+        let cache_dir = root_dir.unwrap_or_else(std::env::temp_dir)
+            .join(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")));
+
         Bkt {
-            cache: Cache::new(root_dir, scope),
+            cache: Cache::new(&cache_dir, scope),
         }
     }
 
@@ -332,17 +524,5 @@ impl Bkt {
                 std::thread::sleep(poll_duration);
             }
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Sanity-checking that CommandDesc::cache_key isn't changing over time. This test may need
-    // to be updated if the implementation changes in the future.
-    #[test]
-    fn stable_hash() {
-        assert_eq!(CommandDesc::new(vec!("foo", "bar")).cache_key(), "13EFD84004DBAD3A");
     }
 }

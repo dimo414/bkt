@@ -34,5 +34,4 @@ version = "1.0.62"
 
 [dev-dependencies]
 filetime = "0.2"
-single = "1.0.0"
 test_dir = "0.1.0"

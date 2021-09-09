@@ -1,13 +1,14 @@
 #[macro_use] extern crate clap;
 
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::{Command, exit, Child};
 use std::time::{Duration};
 
 use anyhow::{Context, Result};
 use clap::{Arg, App};
 
-use bkt::{CommandDesc,Bkt};
+use bkt::{CommandDesc, Bkt};
 
 fn force_background_update() -> Result<Child> {
     let mut args = std::env::args_os();
@@ -26,7 +27,6 @@ struct AppState {
     ttl: Duration,
     stale: Option<Duration>,
     force_update: bool,
-    cleanup: bool,
 }
 
 // Looks up a command in the cache, outputting its stdout/stderr if found. Otherwise executes
@@ -38,11 +38,6 @@ fn run(state: AppState) -> Result<i32> {
     if let Some(stale) = state.stale {
         assert!(!stale.as_secs() > 0, "--stale cannot be zero"); // TODO use is_zero once stable
         assert!(stale < state.ttl, "--stale must be less than --ttl");
-    }
-
-    if state.cleanup {
-        state.bkt.cleanup_once()?;
-        return Ok(0);
     }
 
     // Warm the cache and return; nothing should be written to out/err
@@ -100,11 +95,6 @@ fn main() {
             .long("force_update")
             .takes_value(false)
             .hidden(true))
-        // TODO delete this flag once there's better tests of the Bkt library
-        .arg(Arg::with_name("cleanup")
-            .long("cleanup")
-            .takes_value(false)
-            .hidden(true))
         .get_matches();
 
     // https://github.com/clap-rs/clap/discussions/2453
@@ -117,12 +107,12 @@ fn main() {
                 .into());
 
     let state = AppState {
-        bkt: Bkt::create(matches.value_of("cache_dir"), matches.value_of("cache_scope")),
+        bkt: Bkt::create(matches.value_of("cache_dir").map(PathBuf::from),
+                         matches.value_of("cache_scope")),
         command: CommandDesc::new(matches.values_of("command").expect("Required").collect::<Vec<_>>()),
         ttl: value_t_or_exit!(matches.value_of("ttl"), humantime::Duration).into(),
         stale,
         force_update: matches.is_present("force_update"),
-        cleanup: matches.is_present("cleanup"),
     };
 
     match run(state) {
