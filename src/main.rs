@@ -26,6 +26,7 @@ struct AppState {
     ttl: Duration,
     stale: Option<Duration>,
     force_update: bool,
+    cleanup: bool,
 }
 
 // Looks up a command in the cache, outputting its stdout/stderr if found. Otherwise executes
@@ -37,6 +38,11 @@ fn run(state: AppState) -> Result<i32> {
     if let Some(stale) = state.stale {
         assert!(!stale.as_secs() > 0, "--stale cannot be zero"); // TODO use is_zero once stable
         assert!(stale < state.ttl, "--stale must be less than --ttl");
+    }
+
+    if state.cleanup {
+        state.bkt.cleanup_once()?;
+        return Ok(0);
     }
 
     // Warm the cache and return; nothing should be written to out/err
@@ -57,7 +63,6 @@ fn run(state: AppState) -> Result<i32> {
 
     io::stdout().write_all(&invocation.stdout).unwrap();
     io::stderr().write_all(&invocation.stderr).unwrap();
-    // TODO occasionally clean up cache dir, see https://crates.io/crates/walkdir
     Ok(invocation.status)
 }
 
@@ -95,6 +100,11 @@ fn main() {
             .long("force_update")
             .takes_value(false)
             .hidden(true))
+        // TODO delete this flag once there's better tests of the Bkt library
+        .arg(Arg::with_name("cleanup")
+            .long("cleanup")
+            .takes_value(false)
+            .hidden(true))
         .get_matches();
 
     // https://github.com/clap-rs/clap/discussions/2453
@@ -112,6 +122,7 @@ fn main() {
         ttl: value_t_or_exit!(matches.value_of("ttl"), humantime::Duration).into(),
         stale,
         force_update: matches.is_present("force_update"),
+        cleanup: matches.is_present("cleanup"),
     };
 
     match run(state) {

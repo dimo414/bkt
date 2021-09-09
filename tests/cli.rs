@@ -1,10 +1,11 @@
 use std::process::Command;
 
 use test_dir::{TestDir, DirBuilder};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, Duration};
 
 use anyhow::Result;
+use single::Single;
 
 // Bash scripts to pass to -c.
 // Avoid depending on external programs.
@@ -70,6 +71,23 @@ fn make_dir_stale(dir: &Path, desired_time: &SystemTime) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn dir_contents(dir: &Path) -> Vec<String> {
+    fn contents(dir: &Path, ret: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                contents(&path, ret)?;
+            } else {
+                ret.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut paths = vec!();
+    contents(dir, &mut paths).unwrap();
+    paths.iter().map(|p| p.strip_prefix(dir).unwrap().display().to_string()).collect()
 }
 
 #[test]
@@ -269,9 +287,30 @@ fn exit_code_preserved() {
     assert_eq!(run(bkt(&dir.path("cache")).args(&args).arg("14")).status, Some(14));
 }
 
+// TODO move this to a Bkt lib test
+#[test]
+fn cleanup() {
+    let dir = TestDir::temp();
+    let _output = succeed(bkt(&dir.path("cache")).args(&["--", "true"]));
+
+    let bkt_dir = dir.path("cache").read_dir().unwrap().single().unwrap().unwrap().path();
+    assert_eq!(dir_contents(&bkt_dir.join("keys")).len(), 1);
+    assert_eq!(dir_contents(&bkt_dir.join("data")).len(), 1);
+
+    make_dir_stale(&dir.path("cache"), &(SystemTime::now() - Duration::from_secs(120))).unwrap();
+    let _output = succeed(bkt(&dir.path("cache")).args(&["--", "true"]));
+    assert_eq!(dir_contents(&bkt_dir.join("keys")).len(), 1);
+    assert_eq!(dir_contents(&bkt_dir.join("data")).len(), 2);
+
+    make_dir_stale(&dir.path("cache"), &(SystemTime::now() - Duration::from_secs(120))).unwrap();
+    succeed(bkt(&dir.path("cache")).args(&["--cleanup", "--", ""]));
+
+    assert_eq!(dir_contents(&bkt_dir.join("keys")).len(), 0);
+    assert_eq!(dir_contents(&bkt_dir.join("data")).len(), 0);
+}
+
 // TODO
 // respects env
 // respects cwd
 // concurrent calls race
-// cleanup stale cache data
 // warm cache

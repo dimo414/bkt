@@ -1,12 +1,12 @@
 use std::time::{Duration, Instant, SystemTime};
 use std::fmt;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::process::{Command};
-use std::io::{self, BufReader, ErrorKind, BufWriter};
+use std::io::{self, BufReader, ErrorKind, BufWriter, Write};
 use std::path::{PathBuf, Path};
 use std::hash::{Hash, Hasher};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Error, Result};
 use serde::{Serialize, Deserialize};
 
 // Describes a command to be cached. Is used as the cache key.
@@ -58,6 +58,49 @@ pub struct Invocation {
     pub runtime: Duration,
 }
 
+struct FileLock {
+    lock_file: PathBuf,
+}
+
+impl FileLock {
+    fn try_acquire(lock_dir: &Path, name: &str, consider_stale: Duration) -> Result<Option<FileLock>> {
+        let lock_file = lock_dir.join(name).with_extension("lock");
+        match OpenOptions::new().create_new(true).write(true).open(&lock_file) {
+            Ok(mut lock) => {
+                write!(lock, "{}", std::process::id())?;
+                Ok(Some(FileLock{ lock_file }))
+            },
+            Err(io) => {
+                match io.kind() {
+                    ErrorKind::AlreadyExists => {
+                        if let Ok(lock_metadata) = std::fs::metadata(&lock_file) {
+                            if let Ok(age) = lock_metadata.modified()?.elapsed() {
+                                if age > consider_stale {
+                                    return Err(Error::msg(format!(
+                                        "Lock {} held by PID {} appears stale and may need to be deleted manually.",
+                                        lock_file.display(),
+                                        std::fs::read_to_string(&lock_file).unwrap_or("unknown".into()))));
+                                }
+                            }
+                        }
+                        Ok(None)
+                    },
+                    _ => { Err(Error::new(io)) }
+                }
+            },
+        }
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_file(&self.lock_file) {
+            eprintln!("Failed to delete lockfile {}, may need to be deleted manually. Reason: {:?}",
+                      self.lock_file.display(), e);
+        }
+    }
+}
+
 // See https://doc.rust-lang.org/std/fs/fn.soft_link.html
 #[cfg(windows)]
 use std::os::windows::fs::symlink_file as symlink;
@@ -65,26 +108,26 @@ use std::os::windows::fs::symlink_file as symlink;
 use std::os::unix::fs::symlink;
 
 // TODO make this a trait so we can swap out impls, namely an in-memory impl
+#[derive(Clone)]
 struct Cache {
+    cache_dir: PathBuf,
     key_dir: PathBuf,
     data_dir: PathBuf,
 }
 
 impl Cache {
     fn new(root_dir: Option<&str>, scope: Option<&str>) -> Cache {
-        let mut dir = root_dir.map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let root_dir = root_dir.map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
         // Note the cache is invalidated when the minor version changes
-        dir.push(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")));
-        let mut key_dir = dir.clone();
-        key_dir.push("keys");
+        let cache_dir = root_dir.join(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")));
+        let mut key_dir = cache_dir.join("keys");
         if let Some(scope) = scope {
             let scope = Path::new(scope);
             assert_eq!(scope.iter().count(), 1, "scope should be a single path element");
             key_dir.push(scope);
         }
-        let mut data_dir = dir;
-        data_dir.push("data");
-        Cache{ key_dir, data_dir }
+        let data_dir = cache_dir.join("data");
+        Cache{ cache_dir, key_dir, data_dir }
     }
 
     #[cfg(not(feature = "debug"))]
@@ -137,7 +180,9 @@ impl Cache {
         Ok(Some((found, mtime)))
     }
 
-    fn store(&self, invocation: &Invocation, ttl: &Duration) -> Result<()> {
+    fn store(&self, invocation: &Invocation, ttl: Duration) -> Result<()> {
+        // TODO allow sub-second precision by rounding up the ttl_dir; lookup() already respects
+        // sub-second TTLs
         assert!(ttl.as_secs() > 0, "ttl must be a positive number of seconds");
         let ttl_dir = self.data_dir.join(ttl.as_secs().to_string());
         std::fs::create_dir_all(&ttl_dir)?;
@@ -152,6 +197,58 @@ impl Cache {
         let tmp_symlink = tempfile::NamedTempFile::new()?.path().to_path_buf();
         symlink(&path, &tmp_symlink)?;
         std::fs::rename(&tmp_symlink, self.key_dir.join(invocation.command.cache_key()))?;
+        Ok(())
+    }
+
+    fn cleanup(&self) -> Result<()> {
+        if let Some(_lock) = FileLock::try_acquire(&self.cache_dir, "cleanup", Duration::from_secs(60*10))? {
+            // Don't bother if cleanup has been attempted recently
+            let last_attempt_file = self.cache_dir.join("last_cleanup");
+            if let Ok(metadata) = last_attempt_file.metadata() {
+                if metadata.modified()?.elapsed()? < Duration::from_secs(30) {
+                    return Ok(());
+                }
+            }
+            File::create(&last_attempt_file)?; // resets mtime if already exists
+
+            // First delete stale data files
+            for entry in std::fs::read_dir(&self.data_dir)? {
+                let ttl_dir = entry?.path();
+                let ttl = Duration::from_secs(
+                    ttl_dir.file_name().and_then(|s| s.to_str()).and_then(|s| s.parse().ok())
+                        .ok_or(Error::msg(format!("Invalid ttl directory {}", ttl_dir.display())))?);
+
+                for entry in std::fs::read_dir(&ttl_dir)? {
+                    let file = entry?.path();
+                    // Disregard errors on individual files; typically due to concurrent deletion
+                    // or other changes we don't care about.
+                    let _ = Cache::delete_stale_file(&file, ttl);
+                }
+            }
+
+            // Then delete broken symlinks
+            // TODO this only deletes symlinks in the scoped key_dir, which is fine but sub-optimal
+            for entry in std::fs::read_dir(&self.key_dir)? {
+                let symlink = entry?.path();
+                // This reads as if we're deleting files that no longer exist, but what it really
+                // means is "if the symlink is broken, try to delete _the symlink_." It would also
+                // try to delete a symlink that happened to be deleted concurrently, but this is
+                // harmless since we ignore the error.
+                // std::fs::symlink_metadata() could be used to check that the symlink itself exists
+                // if needed, but this could still have false-positives due to a TOCTOU race.
+                if !symlink.exists() {
+                    let _ = std::fs::remove_file(symlink);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn delete_stale_file(file: &Path, ttl: Duration) -> Result<()> {
+        let age = std::fs::metadata(file)?.modified()?.elapsed()?;
+        if age > ttl {
+            std::fs::remove_file(&file)?;
+        }
         Ok(())
     }
 }
@@ -206,7 +303,7 @@ impl Bkt {
             Some((cached, mtime)) => (cached, mtime.elapsed()?),
             None => {
                 let result = Bkt::execute_subprocess(command)?;
-                self.cache.store(&result, &ttl)?;
+                self.cache.store(&result, ttl)?;
                 (result, Duration::default())
             }
         };
@@ -215,8 +312,26 @@ impl Bkt {
 
     pub fn refresh(&self, command: &CommandDesc, ttl: Duration) -> Result<Invocation> {
         let result = Bkt::execute_subprocess(command)?;
-        self.cache.store(&result, &ttl)?;
+        self.cache.store(&result, ttl)?;
         Ok(result)
+    }
+
+    pub fn cleanup_once(&self) -> Result<()> {
+        self.cache.cleanup()
+    }
+
+    pub fn cleanup_thread(&self) -> std::thread::JoinHandle<()> {
+        let cache = self.cache.clone();
+        std::thread::spawn(move || {
+            //  Hard-coded for now, could be made configurable if needed
+            let poll_duration = Duration::from_secs(60);
+            loop {
+                if let Err(e) = cache.cleanup() {
+                    eprintln!("bkt: cache cleanup failed: {:?}", e);
+                }
+                std::thread::sleep(poll_duration);
+            }
+        })
     }
 }
 
