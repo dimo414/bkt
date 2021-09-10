@@ -237,6 +237,34 @@ fn respects_cwd() {
 }
 
 #[test]
+fn respects_env() {
+    let dir = TestDir::temp();
+    let printf = "printf 'foo:%s bar:%s baz:%s' \"$FOO\" \"$BAR\" \"$BAZ\"";
+    let args = vec!("--", "bash", "-c", printf);
+    let env_args = vec!("--env=FOO", "--env=BAR", "--", "bash", "-c", printf);
+
+    let without_env = succeed(bkt(dir.path("cache")).args(&args)
+        .env("FOO", "1").env("BAR", "1").env("BAZ", "1"));
+    assert_eq!(without_env, succeed(bkt(dir.path("cache")).args(&args)));
+    // even if --env is set, if the vars are absent cache still hits earlier call
+    assert_eq!(without_env, succeed(bkt(dir.path("cache")).args(&env_args)));
+
+    let env = succeed(bkt(dir.path("cache")).args(&env_args)
+        .env("FOO", "2").env("BAR", "2").env("BAZ", "2"));
+    assert_eq!(env, "foo:2 bar:2 baz:2");
+    let env = succeed(bkt(dir.path("cache")).args(&env_args)
+        .env("FOO", "3").env("BAR", "2").env("BAZ", "3"));
+    assert_eq!(env, "foo:3 bar:2 baz:3");
+    let env = succeed(bkt(dir.path("cache")).args(&env_args)
+        .env("FOO", "4").env("BAR", "4").env("BAZ", "4"));
+    assert_eq!(env, "foo:4 bar:4 baz:4");
+    let env = succeed(bkt(dir.path("cache")).args(&env_args)
+        .env("FOO", "2").env("BAR", "2").env("BAZ", "5"));
+    assert_eq!(env, "foo:2 bar:2 baz:2"); // BAZ doesn't invalidate cache
+
+}
+
+#[test]
 fn no_debug_output() {
     let dir = TestDir::temp();
     let args = vec!("--", "bash", "-c", "true");
@@ -290,7 +318,5 @@ fn exit_code_preserved() {
 }
 
 // TODO
-// respects env
-// respects cwd
 // concurrent calls race
 // warm cache

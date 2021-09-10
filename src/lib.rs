@@ -5,6 +5,7 @@ use std::process::{Command};
 use std::io::{self, BufReader, ErrorKind, BufWriter, Write};
 use std::path::{PathBuf, Path};
 use std::hash::{Hash, Hasher};
+use std::collections::BTreeMap;
 
 use anyhow::{Context, Error, Result};
 use serde::{Serialize, Deserialize};
@@ -15,7 +16,7 @@ use serde::{Serialize, Deserialize};
 pub struct CommandDesc {
     args: Vec<String>,
     cwd: Option<PathBuf>,
-    // TODO env vars - https://doc.rust-lang.org/std/env/fn.var.html
+    env: BTreeMap<String, String>,
 }
 
 impl CommandDesc {
@@ -23,6 +24,7 @@ impl CommandDesc {
         CommandDesc {
             args: command.into_iter().map(Into::into).collect(),
             cwd: None,
+            env: BTreeMap::new(),
         }
     }
 
@@ -34,6 +36,33 @@ impl CommandDesc {
 
     pub fn with_cwd(&self) -> Result<CommandDesc> {
         Ok(self.with_working_dir(std::env::current_dir()?))
+    }
+
+    pub fn with_env_value(&self, key: &str, value: &str) -> CommandDesc {
+        let mut ret = self.clone();
+        ret.env.insert(key.into(), value.into());
+        ret
+    }
+
+    pub fn with_env(&self, key: &str) -> Result<CommandDesc> {
+        let var = std::env::var(key);
+        if let Err(std::env::VarError::NotPresent) = var {
+            return Ok(self.clone()); // no-op
+        }
+        Ok(self.with_env_value(key, &var?))
+    }
+
+    pub fn with_envs<I, K, V>(&self, envs: I) -> CommandDesc
+        where
+            I: IntoIterator<Item = (K, V)>,
+            K: AsRef<str>,
+            V: AsRef<str>,
+    {
+        let mut ret = self.clone();
+        for (ref key, ref val) in envs {
+            ret.env.insert(key.as_ref().into(), val.as_ref().into());
+        }
+        ret
     }
 
     fn cache_key(&self) -> String {
@@ -80,6 +109,8 @@ mod cmd_tests {
             CommandDesc::new(vec!("foo", "b ar")),
             CommandDesc::new(vec!("foo")).with_working_dir("/bar"),
             CommandDesc::new(vec!("foo")).with_working_dir("/bar/baz"),
+            CommandDesc::new(vec!("foo")).with_env_value("a", "b"),
+            CommandDesc::new(vec!("foo")).with_working_dir("/bar").with_env_value("a", "b"),
         );
 
         // https://old.reddit.com/r/rust/comments/2koptu/best_way_to_visit_all_pairs_in_a_vec/clnhxr5/
@@ -483,6 +514,10 @@ impl Bkt {
         if let Some(cwd) = &desc.cwd {
             // TODO ensure a test covers this line being commented out
             command.current_dir(cwd);
+        }
+        if !desc.env.is_empty() {
+            // TODO ensure a test covers this line being commented out
+            command.envs(&desc.env);
         }
         command
     }

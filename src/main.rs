@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, exit, Child};
 use std::time::{Duration};
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
 use clap::{Arg, App};
@@ -25,7 +26,8 @@ fn force_background_update() -> Result<Child> {
 // the command and caches the invocation. An exit code that _attempts_ to reflect the subprocess'
 // exit status is returned, or an error message if either the cache could not be accessed or the
 // subprocess could not be run.
-fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, ttl: Duration, stale: Option<Duration>, force_update: bool) -> Result<i32> {
+fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&str>,
+       ttl: Duration, stale: Option<Duration>, force_update: bool) -> Result<i32> {
     assert!(!ttl.as_secs() > 0, "--ttl cannot be zero"); // TODO use is_zero once stable
     if let Some(stale) = stale {
         assert!(!stale.as_secs() > 0, "--stale cannot be zero"); // TODO use is_zero once stable
@@ -40,6 +42,12 @@ fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, ttl: Duration, stale: 
 
     if use_cwd {
         command = command.with_cwd()?;
+    }
+    if !env_keys.is_empty() {
+        let envs: BTreeMap<_,_> = std::env::vars()
+            // `as &str` required per https://stackoverflow.com/q/65549983/113632
+            .filter(|(k,_)| env_keys.contains(&k as &str)).collect();
+        command = command.with_envs(&envs);
     }
 
     let (invocation, age) = bkt.execute(&command, ttl)?;
@@ -80,7 +88,14 @@ fn main() {
             .alias("cwd")
             .takes_value(false)
             .help("Includes the current working directory in the cache key, so that the same \
-                      command run in different directories caches separately."))
+                   command run in different directories caches separately."))
+        .arg(Arg::with_name("env")
+            .long("use_environment")
+            .alias("env")
+            .takes_value(true)
+            .multiple(true)
+            .help("Includes the given environment variable in the cache key, so that the same \
+                   command run with different values for the given variables caches separately."))
         .arg(Arg::with_name("cache_dir")
             .long("cache_dir")
             .takes_value(true)
@@ -103,6 +118,7 @@ fn main() {
                           matches.value_of("cache_scope"));
     let command = CommandDesc::new(matches.values_of("command").expect("Required").collect::<Vec<_>>());
     let use_cwd = matches.is_present("cwd");
+    let env = matches.values_of("env").map(|e| e.collect()).unwrap_or_else(BTreeSet::new);
     let ttl = value_t_or_exit!(matches.value_of("ttl"), humantime::Duration).into();
 
     // https://github.com/clap-rs/clap/discussions/2453
@@ -116,7 +132,7 @@ fn main() {
 
     let force_update = matches.is_present("force_update");
 
-    match run(bkt, command, use_cwd, ttl, stale, force_update) {
+    match run(bkt, command, use_cwd, env, ttl, stale, force_update) {
         Ok(code) => exit(code),
         Err(msg) => {
             eprintln!("bkt: {:#}", msg);
