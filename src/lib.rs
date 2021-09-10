@@ -12,7 +12,6 @@ use anyhow::{Context, Error, Result};
 use serde::{Serialize, Deserialize};
 
 // Describes a command to be cached. Is used as the cache key.
-// TODO use OsStr/OsString rather than String
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct CommandDesc {
     args: Vec<OsString>,
@@ -324,7 +323,8 @@ impl Cache {
             Ok(())
         }
 
-        if let Some(_lock) = FileLock::try_acquire(&self.cache_dir, "cleanup", Duration::from_secs(60*10))? {
+        // if try_acquire fails, e.g. because the directory does not exist, there's nothing to clean up
+        if let Ok(Some(_lock)) = FileLock::try_acquire(&self.cache_dir, "cleanup", Duration::from_secs(60*10)) {
             // Don't bother if cleanup has been attempted recently
             let last_attempt_file = self.cache_dir.join("last_cleanup");
             if let Ok(metadata) = last_attempt_file.metadata() {
@@ -335,32 +335,36 @@ impl Cache {
             File::create(&last_attempt_file)?; // resets mtime if already exists
 
             // First delete stale data files
-            for entry in std::fs::read_dir(&self.data_dir)? {
-                let ttl_dir = entry?.path();
-                let ttl = Duration::from_secs(
-                    ttl_dir.file_name().and_then(|s| s.to_str()).and_then(|s| s.parse().ok())
-                        .ok_or(Error::msg(format!("Invalid ttl directory {}", ttl_dir.display())))?);
+            if let Ok(data_dir_iter) = std::fs::read_dir(&self.data_dir) {
+                for entry in data_dir_iter {
+                    let ttl_dir = entry?.path();
+                    let ttl = Duration::from_secs(
+                        ttl_dir.file_name().and_then(|s| s.to_str()).and_then(|s| s.parse().ok())
+                            .ok_or(Error::msg(format!("Invalid ttl directory {}", ttl_dir.display())))?);
 
-                for entry in std::fs::read_dir(&ttl_dir)? {
-                    let file = entry?.path();
-                    // Disregard errors on individual files; typically due to concurrent deletion
-                    // or other changes we don't care about.
-                    let _ = delete_stale_file(&file, ttl);
+                    for entry in std::fs::read_dir(&ttl_dir)? {
+                        let file = entry?.path();
+                        // Disregard errors on individual files; typically due to concurrent deletion
+                        // or other changes we don't care about.
+                        let _ = delete_stale_file(&file, ttl);
+                    }
                 }
             }
 
             // Then delete broken symlinks
             // TODO this only deletes symlinks in the scoped key_dir, which is fine but sub-optimal
-            for entry in std::fs::read_dir(&self.key_dir)? {
-                let symlink = entry?.path();
-                // This reads as if we're deleting files that no longer exist, but what it really
-                // means is "if the symlink is broken, try to delete _the symlink_." It would also
-                // try to delete a symlink that happened to be deleted concurrently, but this is
-                // harmless since we ignore the error.
-                // std::fs::symlink_metadata() could be used to check that the symlink itself exists
-                // if needed, but this could still have false-positives due to a TOCTOU race.
-                if !symlink.exists() {
-                    let _ = std::fs::remove_file(symlink);
+            if let Ok(key_dir_iter) = std::fs::read_dir(&self.key_dir) {
+                for entry in key_dir_iter {
+                    let symlink = entry?.path();
+                    // This reads as if we're deleting files that no longer exist, but what it really
+                    // means is "if the symlink is broken, try to delete _the symlink_." It would also
+                    // try to delete a symlink that happened to be deleted concurrently, but this is
+                    // harmless since we ignore the error.
+                    // std::fs::symlink_metadata() could be used to check that the symlink itself exists
+                    // if needed, but this could still have false-positives due to a TOCTOU race.
+                    if !symlink.exists() {
+                        let _ = std::fs::remove_file(symlink);
+                    }
                 }
             }
         }
@@ -545,12 +549,31 @@ impl Bkt {
 
     // TODO better name than execute?
     pub fn execute(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
+        self._execute(command, ttl, false)
+    }
+
+    pub fn execute_and_cleanup(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
+        self._execute(command, ttl, true)
+    }
+
+    fn _execute(&self, command: &CommandDesc, ttl: Duration, cleanup: bool) -> Result<(Invocation, Duration)> {
         let cached = self.cache.lookup(command, ttl)?;
         let result = match cached {
             Some((cached, mtime)) => (cached, mtime.elapsed()?),
             None => {
+                let mut cleanup_hook = None;
+                if cleanup {
+                    // clean the cache in the background on a cache-miss; this will usually
+                    // be much faster than the actual background process.
+                    cleanup_hook = Some(self.cleanup_once());
+                }
                 let result = Bkt::execute_subprocess(command)?;
                 self.cache.store(&result, ttl)?;
+                if let Some(cleanup_hook) = cleanup_hook {
+                    if let Err(e) = cleanup_hook.join().expect("cleanup thread panicked") {
+                        eprintln!("bkt: cache cleanup failed: {:?}", e);
+                    }
+                }
                 (result, Duration::default())
             }
         };
@@ -563,8 +586,9 @@ impl Bkt {
         Ok(result)
     }
 
-    pub fn cleanup_once(&self) -> Result<()> {
-        self.cache.cleanup()
+    pub fn cleanup_once(&self) -> std::thread::JoinHandle<Result<()>> {
+        let cache = self.cache.clone();
+        std::thread::spawn(move || { cache.cleanup() })
     }
 
     pub fn cleanup_thread(&self) -> std::thread::JoinHandle<()> {
@@ -574,7 +598,7 @@ impl Bkt {
             let poll_duration = Duration::from_secs(60);
             loop {
                 if let Err(e) = cache.cleanup() {
-                    eprintln!("bkt: cache cleanup failed: {:?}", e);
+                    eprintln!("Bkt: cache cleanup failed: {:?}", e);
                 }
                 std::thread::sleep(poll_duration);
             }
