@@ -1,10 +1,9 @@
-use std::process::Command;
-
-use test_dir::{TestDir, DirBuilder, FileType};
 use std::path::Path;
+use std::process::Command;
 use std::time::{SystemTime, Duration};
 
 use anyhow::Result;
+use test_dir::{TestDir, DirBuilder, FileType};
 
 // Bash scripts to pass to -c.
 // Avoid depending on external programs.

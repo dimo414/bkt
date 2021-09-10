@@ -1,10 +1,11 @@
 #[macro_use] extern crate clap;
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, exit, Child};
 use std::time::{Duration};
-use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
 use clap::{Arg, App};
@@ -26,7 +27,7 @@ fn force_background_update() -> Result<Child> {
 // the command and caches the invocation. An exit code that _attempts_ to reflect the subprocess'
 // exit status is returned, or an error message if either the cache could not be accessed or the
 // subprocess could not be run.
-fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&str>,
+fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&OsStr>,
        ttl: Duration, stale: Option<Duration>, force_update: bool) -> Result<i32> {
     assert!(!ttl.as_secs() > 0, "--ttl cannot be zero"); // TODO use is_zero once stable
     if let Some(stale) = stale {
@@ -44,9 +45,9 @@ fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&st
         command = command.with_cwd()?;
     }
     if !env_keys.is_empty() {
-        let envs: BTreeMap<_,_> = std::env::vars()
-            // `as &str` required per https://stackoverflow.com/q/65549983/113632
-            .filter(|(k,_)| env_keys.contains(&k as &str)).collect();
+        let envs: BTreeMap<_,_> = std::env::vars_os()
+            // `as &OsStr` required per https://stackoverflow.com/q/65549983/113632
+            .filter(|(k,_)| env_keys.contains(&k as &OsStr)).collect();
         command = command.with_envs(&envs);
     }
 
@@ -116,9 +117,9 @@ fn main() {
 
     let bkt = Bkt::create(matches.value_of("cache_dir").map(PathBuf::from),
                           matches.value_of("cache_scope"));
-    let command = CommandDesc::new(matches.values_of("command").expect("Required").collect::<Vec<_>>());
+    let command = CommandDesc::new(matches.values_of_os("command").expect("Required").collect::<Vec<_>>());
     let use_cwd = matches.is_present("cwd");
-    let env = matches.values_of("env").map(|e| e.collect()).unwrap_or_else(BTreeSet::new);
+    let env = matches.values_of_os("env").map(|e| e.collect()).unwrap_or_else(BTreeSet::new);
     let ttl = value_t_or_exit!(matches.value_of("ttl"), humantime::Duration).into();
 
     // https://github.com/clap-rs/clap/discussions/2453

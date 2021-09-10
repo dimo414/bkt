@@ -1,11 +1,12 @@
-use std::time::{Duration, Instant, SystemTime};
+use std::collections::BTreeMap;
+use std::ffi::{OsString, OsStr};
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::process::{Command};
+use std::hash::{Hash, Hasher};
 use std::io::{self, BufReader, ErrorKind, BufWriter, Write};
 use std::path::{PathBuf, Path};
-use std::hash::{Hash, Hasher};
-use std::collections::BTreeMap;
+use std::process::{Command};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Error, Result};
 use serde::{Serialize, Deserialize};
@@ -14,13 +15,13 @@ use serde::{Serialize, Deserialize};
 // TODO use OsStr/OsString rather than String
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct CommandDesc {
-    args: Vec<String>,
+    args: Vec<OsString>,
     cwd: Option<PathBuf>,
-    env: BTreeMap<String, String>,
+    env: BTreeMap<OsString, OsString>,
 }
 
 impl CommandDesc {
-    pub fn new<I, S>(command: I) -> CommandDesc where I: IntoIterator<Item = S>, S: Into<String> {
+    pub fn new<I, S>(command: I) -> CommandDesc where I: IntoIterator<Item = S>, S: Into<OsString> {
         CommandDesc {
             args: command.into_iter().map(Into::into).collect(),
             cwd: None,
@@ -38,25 +39,26 @@ impl CommandDesc {
         Ok(self.with_working_dir(std::env::current_dir()?))
     }
 
-    pub fn with_env_value(&self, key: &str, value: &str) -> CommandDesc {
+    pub fn with_env_value<K, V>(&self, key: K, value: V) -> CommandDesc
+            where K: AsRef<OsStr>, V: AsRef<OsStr> {
         let mut ret = self.clone();
-        ret.env.insert(key.into(), value.into());
+        ret.env.insert(key.as_ref().into(), value.as_ref().into());
         ret
     }
 
-    pub fn with_env(&self, key: &str) -> Result<CommandDesc> {
-        let var = std::env::var(key);
-        if let Err(std::env::VarError::NotPresent) = var {
-            return Ok(self.clone()); // no-op
+    pub fn with_env<K>(&self, key: K) -> CommandDesc
+            where K: AsRef<OsStr> {
+        if let Some(val) = std::env::var_os(&key) {
+            return self.with_env_value(&key, val);
         }
-        Ok(self.with_env_value(key, &var?))
+        self.clone() // no-op
     }
 
     pub fn with_envs<I, K, V>(&self, envs: I) -> CommandDesc
         where
             I: IntoIterator<Item = (K, V)>,
-            K: AsRef<str>,
-            V: AsRef<str>,
+            K: AsRef<OsStr>,
+            V: AsRef<OsStr>,
     {
         let mut ret = self.clone();
         for (ref key, ref val) in envs {
@@ -73,7 +75,8 @@ impl CommandDesc {
         self.hash(&mut s);
         let hash = s.finish();
         if cfg!(feature = "debug") {
-            let cmd_str: String = self.args.join("-")
+            let cmd_str: String = self.args.iter()
+                .map(|a| a.to_string_lossy()).collect::<Vec<_>>().join("-")
                 .chars().filter(|&c| c.is_alphanumeric() || c == '-').collect();
             format!("{:.100}_{:16X}", cmd_str, hash)
         } else {
@@ -85,7 +88,7 @@ impl CommandDesc {
 // TODO consider removing Display from CommandDesc; not clear this is very informative
 impl fmt::Display for CommandDesc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.args[0])
+        write!(f, "{}", self.args[0].to_string_lossy())
     }
 }
 
@@ -97,7 +100,7 @@ mod cmd_tests {
     // to be updated if the implementation changes in the future.
     #[test]
     fn stable_hash() {
-        assert_eq!(CommandDesc::new(vec!("foo", "bar")).cache_key(), "CED6349C43DAD53E");
+        assert_eq!(CommandDesc::new(vec!("foo", "bar")).cache_key(), "E6152829B1A98275");
     }
 
     #[test]
