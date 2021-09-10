@@ -14,7 +14,7 @@ use serde::{Serialize, Deserialize};
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct CommandDesc {
     args: Vec<String>,
-    // TODO cwd - https://doc.rust-lang.org/std/env/fn.current_dir.html
+    cwd: Option<PathBuf>,
     // TODO env vars - https://doc.rust-lang.org/std/env/fn.var.html
 }
 
@@ -22,7 +22,19 @@ impl CommandDesc {
     pub fn new<I, S>(command: I) -> CommandDesc where I: IntoIterator<Item = S>, S: Into<String> {
         CommandDesc {
             args: command.into_iter().map(Into::into).collect(),
+            cwd: None,
         }
+    }
+
+    // TODO use AsRef<Path> throughout the library
+    pub fn with_working_dir<P: AsRef<Path>>(&self, cwd: P) -> CommandDesc {
+        let mut ret = self.clone();
+        ret.cwd = Some(cwd.as_ref().into());
+        ret
+    }
+
+    pub fn with_cwd(&self) -> Result<CommandDesc> {
+        Ok(self.with_working_dir(std::env::current_dir()?))
     }
 
     fn cache_key(&self) -> String {
@@ -57,7 +69,7 @@ mod cmd_tests {
     // to be updated if the implementation changes in the future.
     #[test]
     fn stable_hash() {
-        assert_eq!(CommandDesc::new(vec!("foo", "bar")).cache_key(), "13EFD84004DBAD3A");
+        assert_eq!(CommandDesc::new(vec!("foo", "bar")).cache_key(), "CED6349C43DAD53E");
     }
 
     #[test]
@@ -67,6 +79,8 @@ mod cmd_tests {
             CommandDesc::new(vec!("foo", "bar")),
             CommandDesc::new(vec!("foo", "b", "ar")),
             CommandDesc::new(vec!("foo", "b ar")),
+            CommandDesc::new(vec!("foo")).with_working_dir("/bar"),
+            CommandDesc::new(vec!("foo")).with_working_dir("/bar/baz"),
         );
 
         // https://old.reddit.com/r/rust/comments/2koptu/best_way_to_visit_all_pairs_in_a_vec/clnhxr5/
@@ -467,6 +481,10 @@ impl Bkt {
     fn build_command(desc: &CommandDesc) -> Command {
         let mut command = Command::new(&desc.args[0]);
         command.args(&desc.args[1..]);
+        if let Some(cwd) = &desc.cwd {
+            // TODO ensure a test covers this line being commented out
+            command.current_dir(cwd);
+        }
         command
     }
 

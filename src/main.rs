@@ -21,34 +21,30 @@ fn force_background_update() -> Result<Child> {
     command.spawn().context("Failed to start background process")
 }
 
-struct AppState {
-    bkt: Bkt,
-    command: CommandDesc,
-    ttl: Duration,
-    stale: Option<Duration>,
-    force_update: bool,
-}
-
 // Looks up a command in the cache, outputting its stdout/stderr if found. Otherwise executes
 // the command and caches the invocation. An exit code that _attempts_ to reflect the subprocess'
 // exit status is returned, or an error message if either the cache could not be accessed or the
 // subprocess could not be run.
-fn run(state: AppState) -> Result<i32> {
-    assert!(!state.ttl.as_secs() > 0, "--ttl cannot be zero"); // TODO use is_zero once stable
-    if let Some(stale) = state.stale {
+fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, ttl: Duration, stale: Option<Duration>, force_update: bool) -> Result<i32> {
+    assert!(!ttl.as_secs() > 0, "--ttl cannot be zero"); // TODO use is_zero once stable
+    if let Some(stale) = stale {
         assert!(!stale.as_secs() > 0, "--stale cannot be zero"); // TODO use is_zero once stable
-        assert!(stale < state.ttl, "--stale must be less than --ttl");
+        assert!(stale < ttl, "--stale must be less than --ttl");
     }
 
     // Warm the cache and return; nothing should be written to out/err
-    if state.force_update {
-        state.bkt.refresh(&state.command, state.ttl)?;
+    if force_update {
+        bkt.refresh(&command, ttl)?;
         return Ok(0);
     }
 
-    let (invocation, age) = state.bkt.execute(&state.command, state.ttl)?;
+    if use_cwd {
+        command = command.with_cwd()?;
+    }
 
-    if let Some(stale) = state.stale {
+    let (invocation, age) = bkt.execute(&command, ttl)?;
+
+    if let Some(stale) = stale {
         if age > stale {
             // Intentionally drop the returned Child; this process will exit momentarily and the
             // child process will continue running in the background.
@@ -79,6 +75,12 @@ fn main() {
             .long("stale")
             .takes_value(true)
             .help("Duration after which the cached result will be asynchronously refreshed"))
+        .arg(Arg::with_name("cwd")
+            .long("use_working_dir")
+            .alias("cwd")
+            .takes_value(false)
+            .help("Includes the current working directory in the cache key, so that the same \
+                      command run in different directories caches separately."))
         .arg(Arg::with_name("cache_dir")
             .long("cache_dir")
             .takes_value(true)
@@ -97,6 +99,12 @@ fn main() {
             .hidden(true))
         .get_matches();
 
+    let bkt = Bkt::create(matches.value_of("cache_dir").map(PathBuf::from),
+                          matches.value_of("cache_scope"));
+    let command = CommandDesc::new(matches.values_of("command").expect("Required").collect::<Vec<_>>());
+    let use_cwd = matches.is_present("cwd");
+    let ttl = value_t_or_exit!(matches.value_of("ttl"), humantime::Duration).into();
+
     // https://github.com/clap-rs/clap/discussions/2453
     let stale = matches.value_of("stale")
         .map(|v|
@@ -106,16 +114,9 @@ fn main() {
                 .unwrap_or_else(|e| e.exit())
                 .into());
 
-    let state = AppState {
-        bkt: Bkt::create(matches.value_of("cache_dir").map(PathBuf::from),
-                         matches.value_of("cache_scope")),
-        command: CommandDesc::new(matches.values_of("command").expect("Required").collect::<Vec<_>>()),
-        ttl: value_t_or_exit!(matches.value_of("ttl"), humantime::Duration).into(),
-        stale,
-        force_update: matches.is_present("force_update"),
-    };
+    let force_update = matches.is_present("force_update");
 
-    match run(state) {
+    match run(bkt, command, use_cwd, ttl, stale, force_update) {
         Ok(code) => exit(code),
         Err(msg) => {
             eprintln!("bkt: {:#}", msg);
