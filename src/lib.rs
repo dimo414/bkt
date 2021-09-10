@@ -26,7 +26,6 @@ impl CommandDesc {
         }
     }
 
-    // TODO use AsRef<Path> throughout the library
     pub fn with_working_dir<P: AsRef<Path>>(&self, cwd: P) -> CommandDesc {
         let mut ret = self.clone();
         ret.cwd = Some(cwd.as_ref().into());
@@ -118,8 +117,8 @@ struct FileLock {
 }
 
 impl FileLock {
-    fn try_acquire(lock_dir: &Path, name: &str, consider_stale: Duration) -> Result<Option<FileLock>> {
-        let lock_file = lock_dir.join(name).with_extension("lock");
+    fn try_acquire<P: AsRef<Path>>(lock_dir: P, name: &str, consider_stale: Duration) -> Result<Option<FileLock>> {
+        let lock_file = lock_dir.as_ref().join(name).with_extension("lock");
         match OpenOptions::new().create_new(true).write(true).open(&lock_file) {
             Ok(mut lock) => {
                 write!(lock, "{}", std::process::id())?;
@@ -201,15 +200,15 @@ struct Cache {
 }
 
 impl Cache {
-    fn new(cache_dir: &Path, scope: Option<&str>) -> Cache {
-        let mut key_dir = cache_dir.join("keys");
+    fn new<P: AsRef<Path>>(cache_dir: P, scope: Option<&str>) -> Cache {
+        let mut key_dir = cache_dir.as_ref().join("keys");
         if let Some(scope) = scope {
             let scope = Path::new(scope);
             assert_eq!(scope.iter().count(), 1, "scope should be a single path element");
             key_dir.push(scope);
         }
-        let data_dir = cache_dir.join("data");
-        Cache{ cache_dir: cache_dir.into(), key_dir, data_dir }
+        let data_dir = cache_dir.as_ref().join("data");
+        Cache{ cache_dir: cache_dir.as_ref().into(), key_dir, data_dir }
     }
 
     #[cfg(not(feature = "debug"))]
@@ -340,11 +339,11 @@ mod cache_tests {
     use super::*;
     use test_dir::{TestDir, DirBuilder};
 
-    fn modtime(path: &Path) -> SystemTime {
+    fn modtime<P: AsRef<Path>>(path: P) -> SystemTime {
         std::fs::metadata(&path).expect("No metadata").modified().expect("No modtime")
     }
 
-    fn make_dir_stale(dir: &Path, age: Duration) -> Result<()> {
+    fn make_dir_stale<P: AsRef<Path>>(dir: P, age: Duration) -> Result<()> {
         let desired_time = SystemTime::now() - age;
         let stale_time = filetime::FileTime::from_system_time(desired_time);
         for entry in std::fs::read_dir(dir)? {
@@ -360,7 +359,7 @@ mod cache_tests {
         Ok(())
     }
 
-    fn dir_contents(dir: &Path) -> Vec<String> {
+    fn dir_contents<P: AsRef<Path>>(dir: P) -> Vec<String> {
         fn contents(dir: &Path, ret: &mut Vec<PathBuf>) -> Result<()> {
             for entry in std::fs::read_dir(&dir)? {
                 let path = entry?.path();
@@ -373,8 +372,8 @@ mod cache_tests {
             Ok(())
         }
         let mut paths = vec!();
-        contents(dir, &mut paths).unwrap();
-        paths.iter().map(|p| p.strip_prefix(dir).unwrap().display().to_string()).collect()
+        contents(dir.as_ref(), &mut paths).unwrap();
+        paths.iter().map(|p| p.strip_prefix(dir.as_ref()).unwrap().display().to_string()).collect()
     }
 
     fn inv(cmd: &CommandDesc, stdout: &str) -> Invocation {
