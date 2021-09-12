@@ -361,6 +361,24 @@ fn warm() {
 }
 
 #[test]
+fn force() {
+    let dir = TestDir::temp();
+    let file = dir.path("file");
+    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
+    let args_force = join(vec!("--force"), &args);
+
+    let output = succeed(bkt(&dir.path("cache")).args(&args));
+    assert_eq!(output, "1");
+    let output = succeed(bkt(&dir.path("cache")).args(&args));
+    assert_eq!(output, "1");
+
+    let output = succeed(bkt(&dir.path("cache")).args(&args_force));
+    assert_eq!(output, "2");
+    let output = succeed(bkt(&dir.path("cache")).args(&args));
+    assert_eq!(output, "2");
+}
+
+#[test]
 fn concurrent_call_race() {
     let dir = TestDir::temp();
     let file = dir.path("file");

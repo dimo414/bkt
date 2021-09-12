@@ -12,9 +12,9 @@ use clap::{Arg, App};
 
 use bkt::{CommandDesc, Bkt};
 
-// Re-invokes bkt with --force_update and discarding the subprocess, causing the cache
+// Re-invokes bkt with --force and then discards the subprocess, causing the cache
 // to be refreshed asynchronously.
-fn force_background_update() -> Result<()> {
+fn force_update_async() -> Result<()> {
     let mut args = std::env::args_os();
     let arg0 = args.next().expect("Must always be a 0th argument");
     let mut command = match std::env::current_exe() {
@@ -22,32 +22,21 @@ fn force_background_update() -> Result<()> {
         Err(_) => Command::new(arg0),
     };
     // Discard stdout/err so the calling process doesn't wait for them to close.
-    // Intentionally drop the returned Child; this process will exit momentarily and the
+    // Intentionally drop the returned Child; after this process exits the
     // child process will continue running in the background.
-    command.stdout(Stdio::null()).stderr(Stdio::null())
-        .arg(format!("--force_update_{}", crate_version!())).args(args)
+    command.arg("--force").args(args)
+        .stdout(Stdio::null()).stderr(Stdio::null())
         .spawn().context("Failed to start background process")?;
     Ok(())
 }
 
 // Runs bkt after main() handles flag parsing
 fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&OsStr>,
-       ttl: Duration, stale: Option<Duration>, warm: bool, force_update: bool) -> Result<i32> {
+       ttl: Duration, stale: Option<Duration>, warm: bool, force: bool) -> Result<i32> {
     assert!(!ttl.as_secs() > 0, "--ttl cannot be zero"); // TODO use is_zero once stable
     if let Some(stale) = stale {
         assert!(!stale.as_secs() > 0, "--stale cannot be zero"); // TODO use is_zero once stable
         assert!(stale < ttl, "--stale must be less than --ttl");
-    }
-
-    // Warm the cache and return; nothing should be written to out/err
-    if force_update {
-        bkt.refresh(&command, ttl)?;
-        return Ok(0);
-    }
-
-    if warm {
-        force_background_update()?;
-        return Ok(0);
     }
 
     if use_cwd {
@@ -60,11 +49,20 @@ fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&Os
         command = command.with_envs(&envs);
     }
 
-    let (invocation, age) = bkt.execute_and_cleanup(&command, ttl)?;
+    if warm && !force {
+        force_update_async()?;
+        return Ok(0);
+    }
+
+    let (invocation, age) = if force {
+        (bkt.refresh(&command, ttl)?, Duration::from_secs(0))
+    } else {
+        bkt.execute_and_cleanup(&command, ttl)?
+    };
 
     if let Some(stale) = stale {
         if age > stale {
-            force_background_update()?;
+            force_update_async()?;
         }
     }
 
@@ -94,7 +92,11 @@ fn main() {
         .arg(Arg::with_name("warm")
             .long("warm")
             .takes_value(false)
-            .help("Asynchronously execute and cache the given command"))
+            .help("Asynchronously execute and cache the given command, even if it's already cached"))
+        .arg(Arg::with_name("force")
+            .long("force")
+            .takes_value(false)
+            .help("Execute and cache the given command, even if it's already cached"))
         .arg(Arg::with_name("cwd")
             .long("use_working_dir")
             .alias("cwd")
@@ -119,12 +121,6 @@ fn main() {
             .takes_value(true)
             .help("If set, all cached data will be scoped to this value, preventing collisions \
                    with commands cached with different scopes"))
-        // This flag is an implementation detail, callers should not rely on it.
-        // The long() is non-constant to reduce misuse.
-        .arg(Arg::with_name("force_update")
-            .long(&format!("force_update_{}", crate_version!()))
-            .takes_value(false)
-            .hidden(true))
         .get_matches();
 
     let bkt = Bkt::create(matches.value_of("cache_dir").map(PathBuf::from),
@@ -144,9 +140,9 @@ fn main() {
                 .into());
     let warm = matches.is_present("warm");
 
-    let force_update = matches.is_present("force_update");
+    let force = matches.is_present("force");
 
-    match run(bkt, command, use_cwd, env, ttl, stale, warm, force_update) {
+    match run(bkt, command, use_cwd, env, ttl, stale, warm, force) {
         Ok(code) => exit(code),
         Err(msg) => {
             eprintln!("bkt: {:#}", msg);
