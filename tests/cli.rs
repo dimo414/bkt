@@ -158,7 +158,11 @@ fn cache_hits_with_different_settings() {
     // the provided TTL is respected, though it was cached with a smaller TTL
     make_dir_stale(dir.path("cache"), Duration::from_secs(15)).unwrap();
     assert_eq!(succeed(bkt(dir.path("cache")).args(&args2)), "1");
-    // TODO however the cache may be invalidated in the background using the older TTL
+
+    // However the cache can be invalidated in the background using the older TTL
+    make_dir_stale(dir.path("cache"), Duration::from_secs(60)).unwrap(); // ensure the following call triggers a cleanup
+    succeed(bkt(dir.path("cache")).args(&["--", "bash", "-c", "sleep 1"])); // trigger cleanup via a different command
+    assert_eq!(succeed(bkt(dir.path("cache")).args(&args1)), "2");
 }
 
 #[test]
