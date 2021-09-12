@@ -24,7 +24,8 @@ fn force_background_update() -> Result<()> {
     // Discard stdout/err so the calling process doesn't wait for them to close.
     // Intentionally drop the returned Child; this process will exit momentarily and the
     // child process will continue running in the background.
-    command.stdout(Stdio::null()).stderr(Stdio::null()).arg("--force_update").args(args)
+    command.stdout(Stdio::null()).stderr(Stdio::null())
+        .arg(format!("--force_update_{}", crate_version!())).args(args)
         .spawn().context("Failed to start background process")?;
     Ok(())
 }
@@ -118,9 +119,10 @@ fn main() {
             .takes_value(true)
             .help("If set, all cached data will be scoped to this value, preventing collisions \
                    with commands cached with different scopes"))
-        // This flag is an implementation detail, callers should not rely on it
+        // This flag is an implementation detail, callers should not rely on it.
+        // The long() is non-constant to reduce misuse.
         .arg(Arg::with_name("force_update")
-            .long("force_update")
+            .long(&format!("force_update_{}", crate_version!()))
             .takes_value(false)
             .hidden(true))
         .get_matches();
