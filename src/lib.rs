@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsString, OsStr};
-use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufReader, ErrorKind, BufWriter, Write};
@@ -81,13 +80,6 @@ impl CommandDesc {
         } else {
             format!("{:16X}", hash)
         }
-    }
-}
-
-// TODO consider removing Display from CommandDesc; not clear this is very informative
-impl fmt::Display for CommandDesc {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.args[0].to_string_lossy())
     }
 }
 
@@ -294,11 +286,13 @@ impl Cache {
         Ok(Some((found, mtime)))
     }
 
+    fn seconds_ceiling(duration: Duration) -> u64 {
+        duration.as_secs() + if duration.subsec_nanos() != 0 { 1 } else { 0 }
+    }
+
     fn store(&self, invocation: &Invocation, ttl: Duration) -> Result<()> {
-        // TODO allow sub-second precision by rounding up the ttl_dir; lookup() already respects
-        // sub-second TTLs
-        assert!(ttl.as_secs() > 0, "ttl must be a positive number of seconds");
-        let ttl_dir = self.data_dir.join(ttl.as_secs().to_string());
+        assert!(!ttl.as_secs() > 0 || ttl.subsec_nanos() > 0, "ttl cannot be zero"); // TODO use is_zero once stable
+        let ttl_dir = self.data_dir.join(Cache::seconds_ceiling(ttl).to_string());
         std::fs::create_dir_all(&ttl_dir)?;
         std::fs::create_dir_all(&self.key_dir)?;
         let file = tempfile::NamedTempFile::new_in(ttl_dir)?;
@@ -535,7 +529,7 @@ impl Bkt {
         // TODO write to stdout/stderr while running, rather than after the process completes?
         // See https://stackoverflow.com/q/66060139
         let result = cmd.output()
-            .with_context(|| format!("Failed to run command {}", desc))?;
+            .with_context(|| format!("Failed to run command {}", desc.args[0].to_string_lossy()))?;
         let runtime = start.elapsed();
         Ok(Invocation {
             command: desc.clone(),

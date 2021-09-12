@@ -33,9 +33,9 @@ fn force_update_async() -> Result<()> {
 // Runs bkt after main() handles flag parsing
 fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&OsStr>,
        ttl: Duration, stale: Option<Duration>, warm: bool, force: bool) -> Result<i32> {
-    assert!(!ttl.as_secs() > 0, "--ttl cannot be zero"); // TODO use is_zero once stable
+    assert!(!ttl.as_secs() > 0 || ttl.subsec_nanos() > 0, "--ttl cannot be zero"); // TODO use is_zero once stable
     if let Some(stale) = stale {
-        assert!(!stale.as_secs() > 0, "--stale cannot be zero"); // TODO use is_zero once stable
+        assert!(!stale.as_secs() > 0 || stale.subsec_nanos() > 0, "--stale cannot be zero"); // TODO use is_zero once stable
         assert!(stale < ttl, "--stale must be less than --ttl");
     }
 
