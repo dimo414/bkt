@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, Duration};
 
 use anyhow::Result;
@@ -40,13 +40,18 @@ struct CmdResult {
     status: Option<i32>,
 }
 
-fn run(cmd: &mut Command) -> CmdResult {
-    let result = cmd.output().unwrap();
-    CmdResult{
-        out: std::str::from_utf8(&result.stdout).unwrap().into(),
-        err: std::str::from_utf8(&result.stderr).unwrap().into(),
-        status: result.status.code()
+impl From<std::process::Output> for CmdResult {
+    fn from(output: std::process::Output) -> Self {
+        CmdResult{
+            out: std::str::from_utf8(&output.stdout).unwrap().into(),
+            err: std::str::from_utf8(&output.stderr).unwrap().into(),
+            status: output.status.code()
+        }
     }
+}
+
+fn run(cmd: &mut Command) -> CmdResult {
+    cmd.output().unwrap().into()
 }
 
 fn succeed(cmd: &mut Command) -> String {
@@ -142,7 +147,7 @@ fn cache_expires_separately() {
 #[test]
 fn cache_hits_with_different_settings() {
     let dir = TestDir::temp();
-    let file = dir.path("file1");
+    let file = dir.path("file");
     let args1 = vec!("--ttl=10s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
     let args2 = vec!("--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
 
@@ -351,5 +356,23 @@ fn warm() {
     assert_eq!(output, "awaiting\n");
 }
 
-// TODO
-// concurrent calls race
+#[test]
+fn concurrent_call_race() {
+    let dir = TestDir::temp();
+    let file = dir.path("file");
+    let slow_count_invocations = format!("sleep \"0.5$RANDOM\"; {}", COUNT_INVOCATIONS);
+    let args = vec!("--", "bash", "-c", &slow_count_invocations, "arg0", file.to_str().unwrap());
+    println!("{:?}", args);
+
+    let proc1 = bkt(dir.path("cache")).args(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let proc2 = bkt(dir.path("cache")).args(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let result1: CmdResult = proc1.wait_with_output().unwrap().into();
+    assert_eq!(result1.err, "");
+    assert_eq!(result1.status, Some(0));
+    let result2: CmdResult = proc2.wait_with_output().unwrap().into();
+    assert_eq!(result2.err, "");
+    assert_eq!(result2.status, Some(0));
+
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "..");
+    assert!(result1.out == "2" || result2.out == "2"); // arbitrary which completes first
+}
