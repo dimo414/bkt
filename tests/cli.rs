@@ -4,15 +4,19 @@ use std::time::{SystemTime, Duration};
 
 use anyhow::Result;
 use test_dir::{TestDir, DirBuilder, FileType};
+use std::fs::File;
 
 // Bash scripts to pass to -c.
 // Avoid depending on external programs.
-const COUNT_INVOCATIONS: &str = "file=${1:?} lines=0;
-                                 printf '%s' '.' >> \"$file\";\
-                                 read < \"$file\";\
+const COUNT_INVOCATIONS: &str = "file=${1:?} lines=0; \
+                                 printf '%s' '.' >> \"$file\"; \
+                                 read < \"$file\"; \
                                  printf '%s' \"${#REPLY}\";";
 const PRINT_ARGS: &str = "args=(\"$@\"); declare -p args;";
 const EXIT_WITH: &str = "exit \"${1:?}\";";
+const AWAIT_AND_TOUCH: &str = "echo awaiting; \
+                               until [[ -e \"${1:?}\" ]]; do sleep .1; done; \
+                               echo > \"${2:?}\"";
 
 fn bkt<P: AsRef<Path>>(cache_dir: P) -> Command {
     let test_exe = std::env::current_exe().expect("Could not resolve test location");
@@ -72,6 +76,11 @@ fn make_dir_stale<P: AsRef<Path>>(dir: P, age: Duration) -> Result<()> {
     Ok(())
 }
 
+fn join<A: Clone>(mut vec: Vec<A>, tail: &[A]) -> Vec<A> {
+    vec.extend_from_slice(tail);
+    vec
+}
+
 #[test]
 fn help() {
     let dir = TestDir::temp();
@@ -82,8 +91,8 @@ fn help() {
 #[test]
 fn cached() {
     let dir = TestDir::temp();
-    let file = dir.path("file").display().to_string();
-    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file);
+    let file = dir.path("file");
+    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
     let first_result = run(bkt(dir.path("cache")).args(&args));
 
     for _ in 1..3 {
@@ -95,8 +104,8 @@ fn cached() {
 #[test]
 fn cache_expires() {
     let dir = TestDir::temp();
-    let file = dir.path("file").display().to_string();
-    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file);
+    let file = dir.path("file");
+    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
     let first_result = succeed(bkt(dir.path("cache")).args(&args));
     assert_eq!(first_result, "1");
 
@@ -111,10 +120,10 @@ fn cache_expires() {
 #[test]
 fn cache_expires_separately() {
     let dir = TestDir::temp();
-    let file1 = dir.path("file1").display().to_string();
-    let file2 = dir.path("file2").display().to_string();
-    let args1 = vec!("--ttl=10s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file1);
-    let args2 = vec!("--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file2);
+    let file1 = dir.path("file1");
+    let file2 = dir.path("file2");
+    let args1 = vec!("--ttl=10s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file1.to_str().unwrap());
+    let args2 = vec!("--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file2.to_str().unwrap());
 
     // first invocation
     assert_eq!(succeed(bkt(dir.path("cache")).args(&args1)), "1");
@@ -133,9 +142,9 @@ fn cache_expires_separately() {
 #[test]
 fn cache_hits_with_different_settings() {
     let dir = TestDir::temp();
-    let file = dir.path("file1").display().to_string();
-    let args1 = vec!("--ttl=10s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file);
-    let args2 = vec!("--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file);
+    let file = dir.path("file1");
+    let args1 = vec!("--ttl=10s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
+    let args2 = vec!("--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
 
     // despite different TTLs the invocation is still cached
     assert_eq!(succeed(bkt(dir.path("cache")).args(&args1)), "1");
@@ -151,8 +160,7 @@ fn cache_hits_with_different_settings() {
 fn cache_refreshes_in_background() {
     let dir = TestDir::temp();
     let file = dir.path("file");
-    let file_str = file.display().to_string();
-    let args = vec!("--stale=10s", "--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file_str);
+    let args = vec!("--stale=10s", "--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
     assert_eq!(succeed(bkt(dir.path("cache")).args(&args)), "1");
 
     let last_mod = modtime(&file);
@@ -171,8 +179,8 @@ fn cache_refreshes_in_background() {
 #[test]
 fn respects_cache_dir() {
     let dir = TestDir::temp();
-    let file = dir.path("file").display().to_string();
-    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file);
+    let file = dir.path("file");
+    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
 
     let first_call = succeed(bkt(dir.path("cache")).args(&args));
     assert_eq!(first_call, "1");
@@ -185,8 +193,8 @@ fn respects_cache_dir() {
 #[test]
 fn respects_cache_scope() {
     let dir = TestDir::temp();
-    let file = dir.path("file").display().to_string();
-    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file);
+    let file = dir.path("file");
+    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
 
     let first_call = succeed(bkt(dir.path("cache")).args(&args));
     assert_eq!(first_call, "1");
@@ -202,8 +210,8 @@ fn respects_cache_scope() {
 #[test]
 fn respects_args() {
     let dir = TestDir::temp();
-    let file = dir.path("file").display().to_string();
-    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", &file);
+    let file = dir.path("file");
+    let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
 
     let first_call = succeed(bkt(dir.path("cache")).args(&args));
     assert_eq!(first_call, "1");
@@ -222,7 +230,7 @@ fn respects_cwd() {
         .create("dir1", FileType::Dir)
         .create("dir2", FileType::Dir);
     let args = vec!("--", "bash", "-c", "pwd");
-    let cwd_args = vec!("--cwd", "--", "bash", "-c", "pwd");
+    let cwd_args = join(vec!("--cwd"), &args);
 
     let without_cwd_dir1 = succeed(bkt(dir.path("cache")).args(&args).current_dir(dir.path("dir1")));
     let without_cwd_dir2 = succeed(bkt(dir.path("cache")).args(&args).current_dir(dir.path("dir2")));
@@ -238,9 +246,8 @@ fn respects_cwd() {
 #[test]
 fn respects_env() {
     let dir = TestDir::temp();
-    let printf = "printf 'foo:%s bar:%s baz:%s' \"$FOO\" \"$BAR\" \"$BAZ\"";
-    let args = vec!("--", "bash", "-c", printf);
-    let env_args = vec!("--env=FOO", "--env=BAR", "--", "bash", "-c", printf);
+    let args = vec!("--", "bash", "-c", "printf 'foo:%s bar:%s baz:%s' \"$FOO\" \"$BAR\" \"$BAZ\"");
+    let env_args = join(vec!("--env=FOO", "--env=BAR"), &args);
 
     let without_env = succeed(bkt(dir.path("cache")).args(&args)
         .env("FOO", "1").env("BAR", "1").env("BAZ", "1"));
@@ -316,6 +323,33 @@ fn exit_code_preserved() {
     assert_eq!(run(bkt(dir.path("cache")).args(&args).arg("14")).status, Some(14));
 }
 
+#[test]
+fn warm() {
+    let dir = TestDir::temp();
+    let await_file = dir.path("await");
+    let touch_file = dir.path("touch");
+    let args = vec!("--", "bash", "-c", AWAIT_AND_TOUCH, "arg0",
+                    await_file.to_str().unwrap(), touch_file.to_str().unwrap());
+    let warm_args = join(vec!("--warm"), &args);
+
+    let output = succeed(bkt(dir.path("cache")).args(&warm_args));
+    assert_eq!(output, "");
+    assert!(!touch_file.exists());
+
+    File::create(&await_file).unwrap(); // allow the bash process to terminate
+    for _ in 0..10 {
+        if touch_file.exists() { break; }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // This ensures the bash process has almost-completed, but it could still race with bkt actually
+    // caching the result and creating a key file. If this proves flaky a more robust check would be
+    // to inspect the keys directory.
+    assert!(touch_file.exists());
+
+    std::fs::remove_file(&await_file).unwrap(); // process would not terminate if run again
+    let output = succeed(bkt(dir.path("cache")).args(&args));
+    assert_eq!(output, "awaiting\n");
+}
+
 // TODO
 // concurrent calls race
-// warm cache

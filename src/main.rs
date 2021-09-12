@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::{Command, exit, Child};
+use std::process::{Command, exit, Stdio};
 use std::time::{Duration};
 
 use anyhow::{Context, Result};
@@ -12,23 +12,26 @@ use clap::{Arg, App};
 
 use bkt::{CommandDesc, Bkt};
 
-fn force_background_update() -> Result<Child> {
+// Re-invokes bkt with --force_update and discarding the subprocess, causing the cache
+// to be refreshed asynchronously.
+fn force_background_update() -> Result<()> {
     let mut args = std::env::args_os();
     let arg0 = args.next().expect("Must always be a 0th argument");
     let mut command = match std::env::current_exe() {
         Ok(path) => Command::new(path),
         Err(_) => Command::new(arg0),
     };
-    command.arg("--force_update").args(args);
-    command.spawn().context("Failed to start background process")
+    // Discard stdout/err so the calling process doesn't wait for them to close.
+    // Intentionally drop the returned Child; this process will exit momentarily and the
+    // child process will continue running in the background.
+    command.stdout(Stdio::null()).stderr(Stdio::null()).arg("--force_update").args(args)
+        .spawn().context("Failed to start background process")?;
+    Ok(())
 }
 
-// Looks up a command in the cache, outputting its stdout/stderr if found. Otherwise executes
-// the command and caches the invocation. An exit code that _attempts_ to reflect the subprocess'
-// exit status is returned, or an error message if either the cache could not be accessed or the
-// subprocess could not be run.
+// Runs bkt after main() handles flag parsing
 fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&OsStr>,
-       ttl: Duration, stale: Option<Duration>, force_update: bool) -> Result<i32> {
+       ttl: Duration, stale: Option<Duration>, warm: bool, force_update: bool) -> Result<i32> {
     assert!(!ttl.as_secs() > 0, "--ttl cannot be zero"); // TODO use is_zero once stable
     if let Some(stale) = stale {
         assert!(!stale.as_secs() > 0, "--stale cannot be zero"); // TODO use is_zero once stable
@@ -38,6 +41,11 @@ fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&Os
     // Warm the cache and return; nothing should be written to out/err
     if force_update {
         bkt.refresh(&command, ttl)?;
+        return Ok(0);
+    }
+
+    if warm {
+        force_background_update()?;
         return Ok(0);
     }
 
@@ -55,8 +63,6 @@ fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&Os
 
     if let Some(stale) = stale {
         if age > stale {
-            // Intentionally drop the returned Child; this process will exit momentarily and the
-            // child process will continue running in the background.
             force_background_update()?;
         }
     }
@@ -84,6 +90,10 @@ fn main() {
             .long("stale")
             .takes_value(true)
             .help("Duration after which the cached result will be asynchronously refreshed"))
+        .arg(Arg::with_name("warm")
+            .long("warm")
+            .takes_value(false)
+            .help("Asynchronously execute and cache the given command"))
         .arg(Arg::with_name("cwd")
             .long("use_working_dir")
             .alias("cwd")
@@ -108,7 +118,7 @@ fn main() {
             .takes_value(true)
             .help("If set, all cached data will be scoped to this value, preventing collisions \
                    with commands cached with different scopes"))
-        // TODO add a public --warm flag
+        // This flag is an implementation detail, callers should not rely on it
         .arg(Arg::with_name("force_update")
             .long("force_update")
             .takes_value(false)
@@ -130,10 +140,11 @@ fn main() {
                     format!("The argument '{}' isn't a valid value", v)))
                 .unwrap_or_else(|e| e.exit())
                 .into());
+    let warm = matches.is_present("warm");
 
     let force_update = matches.is_present("force_update");
 
-    match run(bkt, command, use_cwd, env, ttl, stale, force_update) {
+    match run(bkt, command, use_cwd, env, ttl, stale, warm, force_update) {
         Ok(code) => exit(code),
         Err(msg) => {
             eprintln!("bkt: {:#}", msg);
