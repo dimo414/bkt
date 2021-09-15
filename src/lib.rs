@@ -290,19 +290,31 @@ impl Cache {
         duration.as_secs() + if duration.subsec_nanos() != 0 { 1 } else { 0 }
     }
 
+    // https://rust-lang-nursery.github.io/rust-cookbook/algorithms/randomness.html#create-random-passwords-from-a-set-of-alphanumeric-characters
+    fn filename(dir: &Path, label: &str) -> PathBuf {
+        use rand::{thread_rng, Rng};
+        use rand::distributions::Alphanumeric;
+        let rand_str: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(16)
+            .map(char::from)
+            .collect();
+        dir.join(format!("{}.{}", label, rand_str))
+    }
+
     fn store(&self, invocation: &Invocation, ttl: Duration) -> Result<()> {
         assert!(!ttl.as_secs() > 0 || ttl.subsec_nanos() > 0, "ttl cannot be zero"); // TODO use is_zero once stable
         let ttl_dir = self.data_dir.join(Cache::seconds_ceiling(ttl).to_string());
         std::fs::create_dir_all(&ttl_dir)?;
         std::fs::create_dir_all(&self.key_dir)?;
-        let file = tempfile::NamedTempFile::new_in(ttl_dir)?;
+        let path = Cache::filename(&ttl_dir, "bkt-data");
+        // Note: this will fail if filename collides, could retry in a loop if that happens
+        let file = OpenOptions::new().create_new(true).write(true).open(&path)?;
         Cache::serialize(BufWriter::new(&file), invocation)?;
-        let (_, path) = file.keep()?;
         // Roundabout approach to an atomic symlink replacement
-        // https://github.com/dimo414/bash-cache/blob/59bcad6/bash-cache.sh#
-        // Create and immediately destroy a file, to capture a (hopefully still) unique path name
-        // TODO eliminate this wasteful I/O
-        let tmp_symlink = tempfile::NamedTempFile::new()?.path().to_path_buf();
+        // https://github.com/dimo414/bash-cache/issues/26
+        let tmp_symlink = Cache::filename(&self.key_dir, "bkt-symlink");
+        // Note: this will fail if filename collides, could retry in a loop if that happens
         symlink(&path, &tmp_symlink)?;
         std::fs::rename(&tmp_symlink, self.key_dir.join(invocation.command.cache_key()))?;
         Ok(())
