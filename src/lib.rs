@@ -224,9 +224,8 @@ struct Cache {
 }
 
 impl Cache {
-    // TODO make scope arg Option<String>
-    fn new<P: AsRef<Path>>(cache_dir: P, scope: Option<&str>) -> Cache {
-        Cache{ cache_dir: cache_dir.as_ref().into(), scope: scope.map(|s| s.into()) }
+    fn new<P: AsRef<Path>>(cache_dir: P, scope: Option<String>) -> Cache {
+        Cache{ cache_dir: cache_dir.as_ref().into(), scope }
     }
 
     #[cfg(not(feature = "debug"))]
@@ -473,7 +472,7 @@ mod cache_tests {
         let inv_a = inv(&cmd, "A");
         let inv_b = inv(&cmd, "B");
         let cache = Cache::new(&dir.root(), None);
-        let cache_scoped = Cache::new(&dir.root(), Some("scope"));
+        let cache_scoped = Cache::new(&dir.root(), Some("scope".into()));
 
         cache.store(&inv_a, Duration::from_secs(100)).unwrap();
         cache_scoped.store(&inv_b, Duration::from_secs(100)).unwrap();
@@ -511,11 +510,11 @@ impl Bkt {
         Bkt::create(None, None)
     }
 
-    pub fn scoped(scope: &str) -> Bkt {
+    pub fn scoped(scope: String) -> Bkt {
         Bkt::create(None, Some(scope))
     }
 
-    pub fn create(root_dir: Option<PathBuf>, scope: Option<&str>) -> Bkt {
+    pub fn create(root_dir: Option<PathBuf>, scope: Option<String>) -> Bkt {
         // Note the cache is invalidated when the minor version changes
         let cache_dir = root_dir.unwrap_or_else(std::env::temp_dir)
             .join(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")));
