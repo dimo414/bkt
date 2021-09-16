@@ -220,20 +220,13 @@ use std::os::unix::fs::symlink;
 #[derive(Clone)]
 struct Cache {
     cache_dir: PathBuf,
-    key_dir: PathBuf,
-    data_dir: PathBuf,
+    scope: Option<String>,
 }
 
 impl Cache {
+    // TODO make scope arg Option<String>
     fn new<P: AsRef<Path>>(cache_dir: P, scope: Option<&str>) -> Cache {
-        let mut key_dir = cache_dir.as_ref().join("keys");
-        if let Some(scope) = scope {
-            let scope = Path::new(scope);
-            assert_eq!(scope.iter().count(), 1, "scope should be a single path element");
-            key_dir.push(scope);
-        }
-        let data_dir = cache_dir.as_ref().join("data");
-        Cache{ cache_dir: cache_dir.as_ref().into(), key_dir, data_dir }
+        Cache{ cache_dir: cache_dir.as_ref().into(), scope: scope.map(|s| s.into()) }
     }
 
     #[cfg(not(feature = "debug"))]
@@ -260,9 +253,25 @@ impl Cache {
         Ok(serde_json::from_reader(reader)?)
     }
 
+    fn key_dir(&self) -> PathBuf {
+        self.cache_dir.join("keys")
+    }
+
+    fn key_path(&self, key: &str) -> PathBuf {
+        let file = match &self.scope {
+            Some(scope) => format!("{}.{}", scope, key),
+            None => key.into(),
+        };
+        self.key_dir().join(file)
+    }
+
+    fn data_dir(&self) -> PathBuf {
+        self.cache_dir.join("data")
+    }
+
     fn lookup(&self, command: &CommandDesc, max_age: Duration)
               -> Result<Option<(Invocation, SystemTime)>> {
-        let path = self.key_dir.join(command.cache_key());
+        let path = self.key_path(&command.cache_key());
         let file = File::open(&path);
         if let Err(ref e) = file {
             if e.kind() == ErrorKind::NotFound {
@@ -291,32 +300,28 @@ impl Cache {
     }
 
     // https://rust-lang-nursery.github.io/rust-cookbook/algorithms/randomness.html#create-random-passwords-from-a-set-of-alphanumeric-characters
-    fn filename(dir: &Path, label: &str) -> PathBuf {
+    fn rand_filename(dir: &Path, label: &str) -> PathBuf {
         use rand::{thread_rng, Rng};
         use rand::distributions::Alphanumeric;
-        let rand_str: String = thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(16)
-            .map(char::from)
-            .collect();
+        let rand_str: String = thread_rng().sample_iter(&Alphanumeric).take(16).map(char::from).collect();
         dir.join(format!("{}.{}", label, rand_str))
     }
 
     fn store(&self, invocation: &Invocation, ttl: Duration) -> Result<()> {
         assert!(!ttl.as_secs() > 0 || ttl.subsec_nanos() > 0, "ttl cannot be zero"); // TODO use is_zero once stable
-        let ttl_dir = self.data_dir.join(Cache::seconds_ceiling(ttl).to_string());
+        let ttl_dir = self.data_dir().join(Cache::seconds_ceiling(ttl).to_string());
         std::fs::create_dir_all(&ttl_dir)?;
-        std::fs::create_dir_all(&self.key_dir)?;
-        let path = Cache::filename(&ttl_dir, "bkt-data");
+        std::fs::create_dir_all(&self.key_dir())?;
+        let path = Cache::rand_filename(&ttl_dir, "invocation");
         // Note: this will fail if filename collides, could retry in a loop if that happens
         let file = OpenOptions::new().create_new(true).write(true).open(&path)?;
         Cache::serialize(BufWriter::new(&file), invocation)?;
         // Roundabout approach to an atomic symlink replacement
         // https://github.com/dimo414/bash-cache/issues/26
-        let tmp_symlink = Cache::filename(&self.key_dir, "bkt-symlink");
+        let tmp_symlink = Cache::rand_filename(&self.key_dir(), "tmp-symlink");
         // Note: this will fail if filename collides, could retry in a loop if that happens
         symlink(&path, &tmp_symlink)?;
-        std::fs::rename(&tmp_symlink, self.key_dir.join(invocation.command.cache_key()))?;
+        std::fs::rename(&tmp_symlink, self.key_path(&invocation.command.cache_key()))?;
         Ok(())
     }
 
@@ -341,7 +346,7 @@ impl Cache {
             File::create(&last_attempt_file)?; // resets mtime if already exists
 
             // First delete stale data files
-            if let Ok(data_dir_iter) = std::fs::read_dir(&self.data_dir) {
+            if let Ok(data_dir_iter) = std::fs::read_dir(&self.data_dir()) {
                 for entry in data_dir_iter {
                     let ttl_dir = entry?.path();
                     let ttl = Duration::from_secs(
@@ -358,8 +363,7 @@ impl Cache {
             }
 
             // Then delete broken symlinks
-            // TODO this only deletes symlinks in the scoped key_dir, which is fine but sub-optimal
-            if let Ok(key_dir_iter) = std::fs::read_dir(&self.key_dir) {
+            if let Ok(key_dir_iter) = std::fs::read_dir(&self.key_dir()) {
                 for entry in key_dir_iter {
                     let symlink = entry?.path();
                     // This reads as if we're deleting files that no longer exist, but what it really
