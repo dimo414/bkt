@@ -118,7 +118,7 @@ mod cmd_tests {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub struct Invocation {
     command: CommandDesc, // just used for cache key validation
     pub stdout: Vec<u8>,
@@ -528,11 +528,9 @@ impl Bkt {
         let mut command = Command::new(&desc.args[0]);
         command.args(&desc.args[1..]);
         if let Some(cwd) = &desc.cwd {
-            // TODO ensure a test covers this line being commented out
             command.current_dir(cwd);
         }
         if !desc.env.is_empty() {
-            // TODO ensure a test covers this line being commented out
             command.envs(&desc.env);
         }
         command
@@ -612,5 +610,50 @@ impl Bkt {
                 std::thread::sleep(poll_duration);
             }
         })
+    }
+}
+
+// Note: most functionality of Bkt is tested via cli.rs
+#[cfg(test)]
+mod bkt_tests {
+    use super::*;
+    use test_dir::{TestDir, DirBuilder, FileType};
+
+    #[test]
+    fn cached() {
+        let dir = TestDir::temp();
+        let file = dir.path("file");
+        let cmd = CommandDesc::new(
+            vec!("bash", "-c", "echo \"$RANDOM\" > \"${1:?}\"; cat \"${1:?}\"", "arg0", file.to_str().unwrap()));
+        let bkt = Bkt::create(Some(dir.path("cache")), None);
+        let (first_inv, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
+
+        for _ in 1..3 {
+            let (subsequent_inv, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
+            assert_eq!(first_inv, subsequent_inv);
+        }
+    }
+
+    #[test]
+    fn with_working_dir() {
+        let dir = TestDir::temp().create("dir", FileType::Dir);
+        let cwd = dir.path("dir");
+        let cmd = CommandDesc::new(vec!("bash", "-c", "echo Hello World > file")).with_working_dir(&cwd);
+        let bkt = Bkt::create(Some(dir.path("cache")), None);
+        let (result, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(result.stderr_utf8(), "");
+        assert_eq!(result.status, 0);
+        assert_eq!(std::fs::read_to_string(cwd.join("file")).unwrap(), "Hello World\n");
+    }
+
+    #[test]
+    fn with_env() {
+        let dir = TestDir::temp().create("dir", FileType::Dir);
+        let cmd = CommandDesc::new(vec!("bash", "-c", "echo \"FOO:${FOO:?}\"")).with_env_value("FOO", "bar");
+        let bkt = Bkt::create(Some(dir.path("cache")), None);
+        let (result, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(result.stderr_utf8(), "");
+        assert_eq!(result.status, 0);
+        assert_eq!(result.stdout_utf8(), "FOO:bar\n");
     }
 }
