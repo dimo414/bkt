@@ -210,10 +210,10 @@ fn respects_cache_scope() {
     assert_eq!(first_call, succeed(bkt(dir.path("cache")).args(&args)));
 
     let diff_scope = succeed(bkt(dir.path("cache"))
-        .arg("--cache_scope=scope").args(&args));
+        .arg("--scope=foo").args(&args));
     assert_eq!(diff_scope, "2");
     assert_eq!(diff_scope, succeed(bkt(dir.path("cache"))
-        .arg("--cache_scope=scope").args(&args)));
+        .arg("--scope=foo").args(&args)));
 }
 
 #[test]

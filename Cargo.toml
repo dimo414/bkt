@@ -1,6 +1,6 @@
 [package]
 name = "bkt"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Michael Diamond <dimo414@gmail.com>"]
 description = "CLI to cache subprocess invocations"
 repository = "http://github.com/dimo414/bkt"

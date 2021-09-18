@@ -112,21 +112,21 @@ fn main() {
             .multiple(true)
             .help("Includes the given environment variable in the cache key, so that the same \
                    command run with different values for the given variables caches separately. Alias: --env"))
+        .arg(Arg::with_name("scope")
+            .long("scope")
+            .takes_value(true)
+            .help("If set, all cached data will be scoped to this value, preventing collisions \
+                   with commands cached with different scopes"))
         .arg(Arg::with_name("cache_dir")
             .long("cache_dir")
             .takes_value(true)
             .help("The directory under which to persist cached invocations; defaults to the \
                    system's temp directory. Setting this to a directory backed by RAM or an SSD, \
                    such as a tmpfs partition, will significantly reduce caching overhead."))
-        .arg(Arg::with_name("cache_scope")
-            .long("cache_scope")
-            .takes_value(true)
-            .help("If set, all cached data will be scoped to this value, preventing collisions \
-                   with commands cached with different scopes"))
         .get_matches();
 
     let bkt = Bkt::create(matches.value_of("cache_dir").map(PathBuf::from),
-                          matches.value_of("cache_scope").map(|s| s.into()));
+                          matches.value_of("scope").map(|s| s.into()));
     let command = CommandDesc::new(matches.values_of_os("command").expect("Required").collect::<Vec<_>>());
     let use_cwd = matches.is_present("cwd");
     let env = matches.values_of_os("env").map(|e| e.collect()).unwrap_or_else(BTreeSet::new);
