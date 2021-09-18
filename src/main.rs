@@ -24,7 +24,7 @@ fn force_update_async() -> Result<()> {
     // Discard stdout/err so the calling process doesn't wait for them to close.
     // Intentionally drop the returned Child; after this process exits the
     // child process will continue running in the background.
-    command.arg("--force").args(args)
+    command.arg("--force").args(args.filter(|a| a != "--warm"))
         .stdout(Stdio::null()).stderr(Stdio::null())
         .spawn().context("Failed to start background process")?;
     Ok(())
@@ -84,10 +84,11 @@ fn main() {
             .long("time_to_live")
             .alias("ttl")
             .default_value("60s")
-            .help("Duration the cached result will be valid"))
+            .help("Duration the cached result will be valid. Alias: --ttl"))
         .arg(Arg::with_name("stale")
             .long("stale")
             .takes_value(true)
+            .conflicts_with("warm")
             .help("Duration after which the cached result will be asynchronously refreshed"))
         .arg(Arg::with_name("warm")
             .long("warm")
@@ -96,20 +97,21 @@ fn main() {
         .arg(Arg::with_name("force")
             .long("force")
             .takes_value(false)
+            .conflicts_with("warm")
             .help("Execute and cache the given command, even if it's already cached"))
         .arg(Arg::with_name("cwd")
             .long("use_working_dir")
             .alias("cwd")
             .takes_value(false)
             .help("Includes the current working directory in the cache key, so that the same \
-                   command run in different directories caches separately."))
+                   command run in different directories caches separately. Alias: --cwd"))
         .arg(Arg::with_name("env")
             .long("use_environment")
             .alias("env")
             .takes_value(true)
             .multiple(true)
             .help("Includes the given environment variable in the cache key, so that the same \
-                   command run with different values for the given variables caches separately."))
+                   command run with different values for the given variables caches separately. Alias: --env"))
         .arg(Arg::with_name("cache_dir")
             .long("cache_dir")
             .takes_value(true)
