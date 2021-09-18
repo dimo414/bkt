@@ -516,12 +516,30 @@ impl Bkt {
 
     pub fn create(root_dir: Option<PathBuf>, scope: Option<String>) -> Bkt {
         // Note the cache is invalidated when the minor version changes
+        // TODO use separate directories per user, like bash-cache
+        // See https://stackoverflow.com/q/57951893/113632
         let cache_dir = root_dir.unwrap_or_else(std::env::temp_dir)
             .join(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")));
-
+        // TODO remove this expect(), make factory functions return a Result<Bkt>.
+        Bkt::restrict_dir(&cache_dir).expect("Failed to create cache dir");
         Bkt {
             cache: Cache::new(&cache_dir, scope),
         }
+    }
+
+    #[cfg(not(unix))]
+    fn restrict_dir(cache_dir: &Path) -> Result<()> { Ok(()) }
+    #[cfg(unix)]
+    fn restrict_dir(cache_dir: &Path) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        if !cache_dir.exists() {
+            std::fs::create_dir_all(cache_dir)?;
+            let metadata = std::fs::metadata(cache_dir)?;
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o700); // Only accessible to current user
+            std::fs::set_permissions(cache_dir, permissions)?;
+        }
+        Ok(())
     }
 
     fn build_command(desc: &CommandDesc) -> Command {
