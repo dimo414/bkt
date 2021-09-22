@@ -1,3 +1,20 @@
+//! `bkt` (pronounced "bucket") is a library for caching subprocess executions. It enables reuse of
+//! expensive invocations across separate processes and supports synchronous and asynchronous
+//! refreshing, TTLs, and other functionality. `bkt` is also a standalone binary for use by shell
+//! scripts and other languages, see https://github.com/dimo414/bkt for binary details.
+//!
+//! ```no_run
+//! # fn do_something(_: &str) {}
+//! # fn main() -> anyhow::Result<()> {
+//! # use std::time::Duration;
+//! let bkt = bkt::Bkt::new();
+//! let expensive_cmd = bkt::CommandDesc::new(&["wget", "http://example.com"]);
+//! let (result, age) = bkt.execute(&expensive_cmd, Duration::from_secs(3600))?;
+//! do_something(result.stdout_utf8());
+//! # Ok(()) }
+//! ```
+#![warn(missing_docs)]
+
 use std::collections::BTreeMap;
 use std::ffi::{OsString, OsStr};
 use std::fs::{File, OpenOptions};
@@ -10,7 +27,16 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Error, Result};
 use serde::{Serialize, Deserialize};
 
-// Describes a command to be cached. Is used as the cache key.
+/// Describes a command to be executed and cached. This struct also serves as the cache key.
+/// It consists of a command line invocation and, optionally, a working directory to execute in and
+/// environment variables to set. When set these fields contribute to the cache key, therefore two
+/// invocations with different working directories set will be cached separately.
+///
+/// ```
+/// let cmd = bkt::CommandDesc::new(&["echo", "Hello World!"]);
+/// let with_cwd = bkt::CommandDesc::new(&["ls"]).with_working_dir("/tmp");
+/// let with_env = bkt::CommandDesc::new(&["date"]).with_env_value("TZ", "America/New_York");
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct CommandDesc {
     args: Vec<OsString>,
@@ -19,24 +45,62 @@ pub struct CommandDesc {
 }
 
 impl CommandDesc {
+    /// Constructs a CommandDesc instance for the given command line.
+    ///
+    /// ```
+    /// let cmd = bkt::CommandDesc::new(&["echo", "Hello World!"]);
+    /// ```
     pub fn new<I, S>(command: I) -> CommandDesc where I: IntoIterator<Item = S>, S: Into<OsString> {
-        CommandDesc {
+        let ret = CommandDesc {
             args: command.into_iter().map(Into::into).collect(),
             cwd: None,
             env: BTreeMap::new(),
-        }
+        };
+        assert!(!ret.args.is_empty(), "Command cannot be empty");
+        ret
     }
 
+    /// Sets the working directory the command should be run from, and causes the working directory
+    /// to be included in the cache key. If unset the working directory will be inherited from the
+    /// current process' and will _not_ be used to differentiate invocations in separate working
+    /// directories.
+    ///
+    /// ```
+    /// let cmd = bkt::CommandDesc::new(&["pwd"]).with_working_dir("/tmp");
+    /// ```
     pub fn with_working_dir<P: AsRef<Path>>(&self, cwd: P) -> CommandDesc {
         let mut ret = self.clone();
         ret.cwd = Some(cwd.as_ref().into());
         ret
     }
 
+    /// Sets the working directory to the current process' working directory. This has no effect
+    /// on the subprocess that will be executed (assuming the current process' working directory
+    /// remains unchanged) but does cause the working directory to be included in the cache key.
+    /// Commands that depend on the working directory should call this in order to cache executions
+    /// in different working directories separately.
+    ///
+    /// # Errors
+    ///
+    /// This delegates to [`std::env::current_dir()`] and will fail if it does.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> anyhow::Result<()> {
+    /// let cmd = bkt::CommandDesc::new(&["pwd"]).with_cwd()?;
+    /// # Ok(()) }
+    /// ```
     pub fn with_cwd(&self) -> Result<CommandDesc> {
         Ok(self.with_working_dir(std::env::current_dir()?))
     }
 
+    /// Adds the given key/value pair to the environment the command should be run from, and causes
+    /// this pair to be included in the cache key.
+    ///
+    /// ```
+    /// let cmd = bkt::CommandDesc::new(&["pwd"]).with_env_value("FOO", "bar");
+    /// ```
     pub fn with_env_value<K, V>(&self, key: K, value: V) -> CommandDesc
             where K: AsRef<OsStr>, V: AsRef<OsStr> {
         let mut ret = self.clone();
@@ -44,6 +108,17 @@ impl CommandDesc {
         ret
     }
 
+    /// Looks up the given environment variable in the current process' environment and, if set,
+    /// adds that key/value pair to the environment the command should be run from, and causes this
+    /// pair to be included in the cache key. This has no effect on the subprocess that will be
+    /// executed (assuming the current process' environment remains unchanged).
+    ///
+    /// If the given variable name is not found in the current process' environment this call is a
+    /// no-op, and the cache key will remain unchanged.
+    ///
+    /// ```
+    /// let cmd = bkt::CommandDesc::new(&["date"]).with_env("TZ");
+    /// ```
     pub fn with_env<K>(&self, key: K) -> CommandDesc
             where K: AsRef<OsStr> {
         if let Some(val) = std::env::var_os(&key) {
@@ -52,6 +127,19 @@ impl CommandDesc {
         self.clone() // no-op
     }
 
+    /// Adds the given key/value pairs to the environment the command should be run from, and causes
+    /// these pair to be included in the cache key.
+    ///
+    /// ```
+    /// use std::env;
+    /// use std::collections::HashMap;
+    ///
+    /// let important_envs : HashMap<String, String> =
+    ///     env::vars().filter(|&(ref k, _)|
+    ///         k == "TERM" || k == "TZ" || k == "LANG" || k == "PATH"
+    ///     ).collect();
+    /// let cmd = bkt::CommandDesc::new(&["..."]).with_envs(&important_envs);
+    /// ```
     pub fn with_envs<I, K, V>(&self, envs: I) -> CommandDesc
         where
             I: IntoIterator<Item = (K, V)>,
@@ -118,25 +206,41 @@ mod cmd_tests {
     }
 }
 
+/// The outputs of a cached invocation of a [`CommandDesc`], akin to [`std::process::Output`].
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub struct Invocation {
-    command: CommandDesc, // just used for cache key validation
+    /// Used internally for cache key validation
+    command: CommandDesc,
+    /// The data that the process wrote to stdout.
     pub stdout: Vec<u8>,
+    /// The data that the process wrote to stderr.
     pub stderr: Vec<u8>,
+    /// The exit status of the program, or 126 if the program terminated without an exit status.
+    /// See [`ExitStatus::code()`](std::process::ExitStatus::code()). This is subject to change to
+    /// better support other termination states.
     pub status: i32,
+    /// The time the process took to complete.
     pub runtime: Duration,
 }
 
 impl Invocation {
+    /// Helper to view stdout as a UTF-8 string. Use [`from_utf8`](std::str::from_utf8) directly if
+    /// you need to handle output that may not be UTF-8.
     pub fn stdout_utf8(&self) -> &str {
         std::str::from_utf8(&self.stdout).expect("stdout not valid UTF-8")
     }
 
+    /// Helper to view stderr as a UTF-8 string. Use [`from_utf8`](std::str::from_utf8) directly if
+    /// you need to handle output that may not be UTF-8.
     pub fn stderr_utf8(&self) -> &str {
         std::str::from_utf8(&self.stderr).expect("stderr not valid UTF-8")
     }
 }
 
+/// A file-lock mechanism that holds a lock by atomically creating a file in the given directory,
+/// and deleting the file upon being dropped. Callers should beware that dropping is not guaranteed
+/// (e.g. if the program panics). When a conflicting lock file is found its age (mtime) is checked
+/// to detect stale locks leaked by a separate process that failed to properly drop its lock.
 struct FileLock {
     lock_file: PathBuf,
 }
@@ -216,6 +320,8 @@ use std::os::windows::fs::symlink_file as symlink;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 
+/// A file-system-backed cache for mapping `CommandDesc` keys to `Invocation` values for a given
+/// duration.
 // TODO make this a trait so we can swap out impls, namely an in-memory impl
 #[derive(Clone)]
 struct Cache {
@@ -501,19 +607,35 @@ mod cache_tests {
     }
 }
 
+/// This struct is the main API entry point for the `bkt` library, allowing callers to invoke and
+/// cache subprocesses for later reuse.
 pub struct Bkt {
     cache: Cache,
 }
 
 impl Bkt {
+    /// Creates a new Bkt instance using the [`std::env::temp_dir`] as the cache location.
     pub fn new() -> Bkt {
         Bkt::create(None, None)
     }
 
+    /// Creates a new Bkt instance using the given scope to namespace the cache keys used by this
+    /// instance, so that they do not collide with other instances using the same cache directory.
+    /// This is useful when separate applications could potentially invoke the same commands but
+    /// should not share a cache. Consider using the application's name, PID, and/or a timestamp
+    /// in order to create a sufficiently unique namespace.
+    // TODO make this a mutable method instead of a factory
     pub fn scoped(scope: String) -> Bkt {
         Bkt::create(None, Some(scope))
     }
 
+    /// Creates a new Bkt instance.
+    ///
+    /// If not None the given `root_dir` will be used as the parent directory of the cache. It's
+    /// recommended this directory be in a tmpfs partition or similar so operations are fast. If
+    /// None the [`std::env::temp_dir`] will be used.
+    ///
+    /// See `scoped()` for the effect of passing a non-None `scope` argument.
     pub fn create(root_dir: Option<PathBuf>, scope: Option<String>) -> Bkt {
         // Note the cache is invalidated when the minor version changes
         // TODO use separate directories per user, like bash-cache
@@ -542,6 +664,7 @@ impl Bkt {
         Ok(())
     }
 
+    // TODO make this a From impl
     fn build_command(desc: &CommandDesc) -> Command {
         let mut command = Command::new(&desc.args[0]);
         command.args(&desc.args[1..]);
@@ -572,11 +695,21 @@ impl Bkt {
         })
     }
 
+    /// Looks up the given command in Bkt's cache, returning it, and its age, if found and newer
+    /// than the given TTL.
+    ///
+    /// If stale or not found the command is executed and the result is cached and then returned.
+    /// A zero-duration age will be returned if this invocation refreshed the cache.
     // TODO better name than execute?
+    // TODO flip this to execute_without_cleanup and make execute_and_cleanup just execute.
     pub fn execute(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
         self._execute(command, ttl, false)
     }
 
+    /// See the documentation on `execute()`. This functions like `execute()` but additionally
+    /// triggers a cleanup thread on cache misses, allowing stale data to be cleaned up. Prefer this
+    /// method unless you decide to manage cleanup yourself via `cleanup_once()` or
+    /// `cleanup_thread()`.
     pub fn execute_and_cleanup(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
         self._execute(command, ttl, true)
     }
@@ -605,17 +738,27 @@ impl Bkt {
         Ok(result)
     }
 
+    /// Unconditionally executes the given command and caches the invocation for the given TTL.
+    /// This can be used to "warm" the cache so that subsequent calls to `execute` are fast.
     pub fn refresh(&self, command: &CommandDesc, ttl: Duration) -> Result<Invocation> {
         let result = Bkt::execute_subprocess(command)?;
         self.cache.store(&result, ttl)?;
         Ok(result)
     }
 
+    /// Initiates a single cleanup cycle of the cache, removing stale data in the background. This
+    /// should be invoked by short-lived applications early in their lifecycle and then joined
+    /// before exiting. `execute_and_cleanup` can be used instead to only trigger a cleanup on a
+    /// cache miss, avoiding the extra work on cache hits. Long-running applications should
+    /// typically prefer `cleanup_thread` which triggers periodic cleanups.
     pub fn cleanup_once(&self) -> std::thread::JoinHandle<Result<()>> {
         let cache = self.cache.clone();
         std::thread::spawn(move || { cache.cleanup() })
     }
 
+    /// Initiates an infinite-loop thread that triggers periodic cleanups of the cache, removing
+    /// stale data in the background. It is not necessary to `join()` this thread, it will
+    /// be terminated when the main thread exits.
     pub fn cleanup_thread(&self) -> std::thread::JoinHandle<()> {
         let cache = self.cache.clone();
         std::thread::spawn(move || {
