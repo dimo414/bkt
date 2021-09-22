@@ -699,19 +699,18 @@ impl Bkt {
     /// than the given TTL.
     ///
     /// If stale or not found the command is executed and the result is cached and then returned.
-    /// A zero-duration age will be returned if this invocation refreshed the cache.
+    /// A zero-duration age will be returned if this invocation refreshed the cache. A background
+    /// cleanup thread will also run on cache misses to remove stale data.
     // TODO better name than execute?
-    // TODO flip this to execute_without_cleanup and make execute_and_cleanup just execute.
     pub fn execute(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
-        self._execute(command, ttl, false)
+        self._execute(command, ttl, true)
     }
 
-    /// See the documentation on `execute()`. This functions like `execute()` but additionally
-    /// triggers a cleanup thread on cache misses, allowing stale data to be cleaned up. Prefer this
-    /// method unless you decide to manage cleanup yourself via `cleanup_once()` or
-    /// `cleanup_thread()`.
-    pub fn execute_and_cleanup(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
-        self._execute(command, ttl, true)
+    /// See the documentation on `execute()`. This functions like `execute()` but does not attempt
+    /// to clean up stale data. Prefer this method if you decide to manage cleanup yourself via
+    /// `cleanup_once()` or `cleanup_thread()`.
+    pub fn execute_without_cleanup(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
+        self._execute(command, ttl, false)
     }
 
     fn _execute(&self, command: &CommandDesc, ttl: Duration, cleanup: bool) -> Result<(Invocation, Duration)> {

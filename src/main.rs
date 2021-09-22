@@ -57,7 +57,7 @@ fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&Os
     let (invocation, age) = if force {
         (bkt.refresh(&command, ttl)?, Duration::from_secs(0))
     } else {
-        bkt.execute_and_cleanup(&command, ttl)?
+        bkt.execute(&command, ttl)?
     };
 
     if let Some(stale) = stale {
