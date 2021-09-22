@@ -125,8 +125,13 @@ fn main() {
                    such as a tmpfs partition, will significantly reduce caching overhead."))
         .get_matches();
 
-    let bkt = Bkt::create(matches.value_of("cache_dir").map(PathBuf::from),
-                          matches.value_of("scope").map(|s| s.into()));
+    let mut bkt = match matches.value_of("cache_dir").map(PathBuf::from) {
+        Some(cache_dir) => Bkt::create(cache_dir),
+        None => Bkt::in_tmp(),
+    };
+    if let Some(scope) = matches.value_of("scope") {
+        bkt.scoped(scope.into());
+    }
     let command = CommandDesc::new(matches.values_of_os("command").expect("Required").collect::<Vec<_>>());
     let use_cwd = matches.is_present("cwd");
     let env = matches.values_of_os("env").map(|e| e.collect()).unwrap_or_else(BTreeSet::new);

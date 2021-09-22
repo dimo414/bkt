@@ -7,7 +7,7 @@
 //! # fn do_something(_: &str) {}
 //! # fn main() -> anyhow::Result<()> {
 //! # use std::time::Duration;
-//! let bkt = bkt::Bkt::new();
+//! let bkt = bkt::Bkt::in_tmp();
 //! let expensive_cmd = bkt::CommandDesc::new(&["wget", "http://example.com"]);
 //! let (result, age) = bkt.execute(&expensive_cmd, Duration::from_secs(3600))?;
 //! do_something(result.stdout_utf8());
@@ -50,7 +50,7 @@ impl CommandDesc {
     /// ```
     /// let cmd = bkt::CommandDesc::new(&["echo", "Hello World!"]);
     /// ```
-    pub fn new<I, S>(command: I) -> CommandDesc where I: IntoIterator<Item = S>, S: Into<OsString> {
+    pub fn new<I, S>(command: I) -> Self where I: IntoIterator<Item = S>, S: Into<OsString> {
         let ret = CommandDesc {
             args: command.into_iter().map(Into::into).collect(),
             cwd: None,
@@ -68,7 +68,7 @@ impl CommandDesc {
     /// ```
     /// let cmd = bkt::CommandDesc::new(&["pwd"]).with_working_dir("/tmp");
     /// ```
-    pub fn with_working_dir<P: AsRef<Path>>(&self, cwd: P) -> CommandDesc {
+    pub fn with_working_dir<P: AsRef<Path>>(&self, cwd: P) -> Self {
         let mut ret = self.clone();
         ret.cwd = Some(cwd.as_ref().into());
         ret
@@ -91,7 +91,7 @@ impl CommandDesc {
     /// let cmd = bkt::CommandDesc::new(&["pwd"]).with_cwd()?;
     /// # Ok(()) }
     /// ```
-    pub fn with_cwd(&self) -> Result<CommandDesc> {
+    pub fn with_cwd(&self) -> Result<Self> {
         Ok(self.with_working_dir(std::env::current_dir()?))
     }
 
@@ -101,7 +101,7 @@ impl CommandDesc {
     /// ```
     /// let cmd = bkt::CommandDesc::new(&["pwd"]).with_env_value("FOO", "bar");
     /// ```
-    pub fn with_env_value<K, V>(&self, key: K, value: V) -> CommandDesc
+    pub fn with_env_value<K, V>(&self, key: K, value: V) -> Self
             where K: AsRef<OsStr>, V: AsRef<OsStr> {
         let mut ret = self.clone();
         ret.env.insert(key.as_ref().into(), value.as_ref().into());
@@ -119,7 +119,7 @@ impl CommandDesc {
     /// ```
     /// let cmd = bkt::CommandDesc::new(&["date"]).with_env("TZ");
     /// ```
-    pub fn with_env<K>(&self, key: K) -> CommandDesc
+    pub fn with_env<K>(&self, key: K) -> Self
             where K: AsRef<OsStr> {
         if let Some(val) = std::env::var_os(&key) {
             return self.with_env_value(&key, val);
@@ -140,7 +140,7 @@ impl CommandDesc {
     ///     ).collect();
     /// let cmd = bkt::CommandDesc::new(&["..."]).with_envs(&important_envs);
     /// ```
-    pub fn with_envs<I, K, V>(&self, envs: I) -> CommandDesc
+    pub fn with_envs<I, K, V>(&self, envs: I) -> Self
         where
             I: IntoIterator<Item = (K, V)>,
             K: AsRef<OsStr>,
@@ -246,7 +246,7 @@ struct FileLock {
 }
 
 impl FileLock {
-    fn try_acquire<P: AsRef<Path>>(lock_dir: P, name: &str, consider_stale: Duration) -> Result<Option<FileLock>> {
+    fn try_acquire<P: AsRef<Path>>(lock_dir: P, name: &str, consider_stale: Duration) -> Result<Option<Self>> {
         let lock_file = lock_dir.as_ref().join(name).with_extension("lock");
         match OpenOptions::new().create_new(true).write(true).open(&lock_file) {
             Ok(mut lock) => {
@@ -330,8 +330,14 @@ struct Cache {
 }
 
 impl Cache {
-    fn new<P: AsRef<Path>>(cache_dir: P, scope: Option<String>) -> Cache {
-        Cache{ cache_dir: cache_dir.as_ref().into(), scope }
+    fn new<P: AsRef<Path>>(cache_dir: P) -> Self {
+        Cache{ cache_dir: cache_dir.as_ref().into(), scope: None }
+    }
+
+    fn scoped(&mut self, scope: String) -> &mut Self {
+        assert!(self.scope.is_none());
+        self.scope = Some(scope);
+        self
     }
 
     #[cfg(not(feature = "debug"))]
@@ -540,7 +546,7 @@ mod cache_tests {
         let dir = TestDir::temp();
         let cmd = CommandDesc::new(vec!("foo"));
         let inv = inv(&cmd, "A");
-        let cache = Cache::new(&dir.root(), None);
+        let cache = Cache::new(&dir.root());
 
         let absent = cache.lookup(&cmd, Duration::from_secs(100)).unwrap();
         assert!(absent.is_none());
@@ -555,7 +561,7 @@ mod cache_tests {
         let dir = TestDir::temp();
         let cmd = CommandDesc::new(vec!("foo"));
         let inv = inv(&cmd, "A");
-        let cache = Cache::new(&dir.root(), None);
+        let cache = Cache::new(&dir.root());
 
         cache.store(&inv, Duration::from_secs(5)).unwrap(); // store duration doesn't affect lookups
         make_dir_stale(dir.root(), Duration::from_secs(15)).unwrap();
@@ -577,8 +583,9 @@ mod cache_tests {
         let cmd = CommandDesc::new(vec!("foo"));
         let inv_a = inv(&cmd, "A");
         let inv_b = inv(&cmd, "B");
-        let cache = Cache::new(&dir.root(), None);
-        let cache_scoped = Cache::new(&dir.root(), Some("scope".into()));
+        let cache = Cache::new(&dir.root());
+        let mut cache_scoped = Cache::new(&dir.root());
+        cache_scoped.scoped("scope".into());
 
         cache.store(&inv_a, Duration::from_secs(100)).unwrap();
         cache_scoped.store(&inv_b, Duration::from_secs(100)).unwrap();
@@ -594,7 +601,7 @@ mod cache_tests {
         let dir = TestDir::temp();
         let cmd = CommandDesc::new(vec!("foo"));
         let inv = inv(&cmd, "A");
-        let cache = Cache::new(&dir.root(), None);
+        let cache = Cache::new(&dir.root());
 
         cache.store(&inv, Duration::from_secs(5)).unwrap();
         make_dir_stale(dir.root(), Duration::from_secs(10)).unwrap();
@@ -615,38 +622,37 @@ pub struct Bkt {
 
 impl Bkt {
     /// Creates a new Bkt instance using the [`std::env::temp_dir`] as the cache location.
-    pub fn new() -> Bkt {
-        Bkt::create(None, None)
-    }
-
-    /// Creates a new Bkt instance using the given scope to namespace the cache keys used by this
-    /// instance, so that they do not collide with other instances using the same cache directory.
-    /// This is useful when separate applications could potentially invoke the same commands but
-    /// should not share a cache. Consider using the application's name, PID, and/or a timestamp
-    /// in order to create a sufficiently unique namespace.
-    // TODO make this a mutable method instead of a factory
-    pub fn scoped(scope: String) -> Bkt {
-        Bkt::create(None, Some(scope))
+    pub fn in_tmp() -> Self {
+        Bkt::create(std::env::temp_dir())
     }
 
     /// Creates a new Bkt instance.
     ///
-    /// If not None the given `root_dir` will be used as the parent directory of the cache. It's
-    /// recommended this directory be in a tmpfs partition or similar so operations are fast. If
-    /// None the [`std::env::temp_dir`] will be used.
+    /// The given `root_dir` will be used as the parent directory of the cache. It's recommended
+    /// this directory be in a tmpfs partition, and SSD, or similar so operations are fast.
     ///
     /// See `scoped()` for the effect of passing a non-None `scope` argument.
-    pub fn create(root_dir: Option<PathBuf>, scope: Option<String>) -> Bkt {
+    pub fn create(root_dir: PathBuf) -> Self {
         // Note the cache is invalidated when the minor version changes
         // TODO use separate directories per user, like bash-cache
         // See https://stackoverflow.com/q/57951893/113632
-        let cache_dir = root_dir.unwrap_or_else(std::env::temp_dir)
+        let cache_dir = root_dir
             .join(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")));
         // TODO remove this expect(), make factory functions return a Result<Bkt>.
         Bkt::restrict_dir(&cache_dir).expect("Failed to create cache dir");
         Bkt {
-            cache: Cache::new(&cache_dir, scope),
+            cache: Cache::new(&cache_dir),
         }
+    }
+
+    /// Associates a scope with this Bkt instance, causing it to namespace its cache keys so that
+    /// they do not collide with other instances using the same cache directory. This is useful when
+    /// separate applications could potentially invoke the same commands but should not share a
+    /// cache. Consider using the application's name, PID, and/or a timestamp in order to create a
+    /// sufficiently unique namespace.
+    pub fn scoped(&mut self, scope: String) -> &mut Self {
+        self.cache.scoped(scope);
+        self
     }
 
     #[cfg(not(unix))]
@@ -785,7 +791,7 @@ mod bkt_tests {
         let file = dir.path("file");
         let cmd = CommandDesc::new(
             vec!("bash", "-c", "echo \"$RANDOM\" > \"${1:?}\"; cat \"${1:?}\"", "arg0", file.to_str().unwrap()));
-        let bkt = Bkt::create(Some(dir.path("cache")), None);
+        let bkt = Bkt::create(dir.path("cache"));
         let (first_inv, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
 
         for _ in 1..3 {
@@ -799,7 +805,7 @@ mod bkt_tests {
         let dir = TestDir::temp().create("dir", FileType::Dir);
         let cwd = dir.path("dir");
         let cmd = CommandDesc::new(vec!("bash", "-c", "echo Hello World > file")).with_working_dir(&cwd);
-        let bkt = Bkt::create(Some(dir.path("cache")), None);
+        let bkt = Bkt::create(dir.path("cache"));
         let (result, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.status, 0);
@@ -810,7 +816,7 @@ mod bkt_tests {
     fn with_env() {
         let dir = TestDir::temp().create("dir", FileType::Dir);
         let cmd = CommandDesc::new(vec!("bash", "-c", "echo \"FOO:${FOO:?}\"")).with_env_value("FOO", "bar");
-        let bkt = Bkt::create(Some(dir.path("cache")), None);
+        let bkt = Bkt::create(dir.path("cache"));
         let (result, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.status, 0);
