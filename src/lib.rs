@@ -331,7 +331,7 @@ impl Cache {
         Cache{ cache_dir: cache_dir.as_ref().into(), scope: None }
     }
 
-    fn scoped(&mut self, scope: String) -> &mut Self {
+    fn scoped(mut self, scope: String) -> Self {
         assert!(self.scope.is_none());
         self.scope = Some(scope);
         self
@@ -581,8 +581,7 @@ mod cache_tests {
         let inv_a = inv(&cmd, "A");
         let inv_b = inv(&cmd, "B");
         let cache = Cache::new(&dir.root());
-        let mut cache_scoped = Cache::new(&dir.root());
-        cache_scoped.scoped("scope".into());
+        let cache_scoped = Cache::new(&dir.root()).scoped("scope".into());
 
         cache.store(&inv_a, Duration::from_secs(100)).unwrap();
         cache_scoped.store(&inv_b, Duration::from_secs(100)).unwrap();
@@ -627,8 +626,6 @@ impl Bkt {
     ///
     /// The given `root_dir` will be used as the parent directory of the cache. It's recommended
     /// this directory be in a tmpfs partition, and SSD, or similar so operations are fast.
-    ///
-    /// See `scoped()` for the effect of passing a non-None `scope` argument.
     pub fn create(root_dir: PathBuf) -> Self {
         // Note the cache is invalidated when the minor version changes
         // TODO use separate directories per user, like bash-cache
@@ -647,8 +644,8 @@ impl Bkt {
     /// separate applications could potentially invoke the same commands but should not share a
     /// cache. Consider using the application's name, PID, and/or a timestamp in order to create a
     /// sufficiently unique namespace.
-    pub fn scoped(&mut self, scope: String) -> &mut Self {
-        self.cache.scoped(scope);
+    pub fn scoped(mut self, scope: String) -> Self {
+        self.cache = self.cache.scoped(scope);
         self
     }
 

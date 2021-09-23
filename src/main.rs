@@ -130,7 +130,7 @@ fn main() {
         None => Bkt::in_tmp(),
     };
     if let Some(scope) = matches.value_of("scope") {
-        bkt.scoped(scope.into());
+        bkt = bkt.scoped(scope.into());
     }
     let command = CommandDesc::new(matches.values_of_os("command").expect("Required").collect::<Vec<_>>());
     let use_cwd = matches.is_present("cwd");
