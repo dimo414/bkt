@@ -153,8 +153,7 @@ fn main() {
         Ok(code) => exit(code),
         Err(msg) => {
             eprintln!("bkt: {:#}", msg);
-            // TODO 127 is probably a better fallback code, using 128 for now to differentiate
-            exit(128);
+            exit(127);
         },
     }
 }
