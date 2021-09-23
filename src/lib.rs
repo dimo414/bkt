@@ -7,7 +7,7 @@
 //! # fn do_something(_: &str) {}
 //! # fn main() -> anyhow::Result<()> {
 //! # use std::time::Duration;
-//! let bkt = bkt::Bkt::in_tmp();
+//! let bkt = bkt::Bkt::in_tmp()?;
 //! let expensive_cmd = bkt::CommandDesc::new(&["wget", "http://example.com"]);
 //! let (result, age) = bkt.execute(&expensive_cmd, Duration::from_secs(3600))?;
 //! do_something(result.stdout_utf8());
@@ -618,7 +618,7 @@ pub struct Bkt {
 
 impl Bkt {
     /// Creates a new Bkt instance using the [`std::env::temp_dir`] as the cache location.
-    pub fn in_tmp() -> Self {
+    pub fn in_tmp() -> Result<Self> {
         Bkt::create(std::env::temp_dir())
     }
 
@@ -626,17 +626,16 @@ impl Bkt {
     ///
     /// The given `root_dir` will be used as the parent directory of the cache. It's recommended
     /// this directory be in a tmpfs partition, and SSD, or similar so operations are fast.
-    pub fn create(root_dir: PathBuf) -> Self {
+    pub fn create(root_dir: PathBuf) -> Result<Self> {
         // Note the cache is invalidated when the minor version changes
         // TODO use separate directories per user, like bash-cache
         // See https://stackoverflow.com/q/57951893/113632
         let cache_dir = root_dir
             .join(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")));
-        // TODO remove this expect(), make factory functions return a Result<Bkt>.
-        Bkt::restrict_dir(&cache_dir).expect("Failed to create cache dir");
-        Bkt {
+        Bkt::restrict_dir(&cache_dir)?;
+        Ok(Bkt {
             cache: Cache::new(&cache_dir),
-        }
+        })
     }
 
     /// Associates a scope with this Bkt instance, causing it to namespace its cache keys so that
@@ -785,7 +784,7 @@ mod bkt_tests {
         let file = dir.path("file");
         let cmd = CommandDesc::new(
             vec!("bash", "-c", "echo \"$RANDOM\" > \"${1:?}\"; cat \"${1:?}\"", "arg0", file.to_str().unwrap()));
-        let bkt = Bkt::create(dir.path("cache"));
+        let bkt = Bkt::create(dir.path("cache")).unwrap();
         let (first_inv, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
 
         for _ in 1..3 {
@@ -799,7 +798,7 @@ mod bkt_tests {
         let dir = TestDir::temp().create("dir", FileType::Dir);
         let cwd = dir.path("dir");
         let cmd = CommandDesc::new(vec!("bash", "-c", "echo Hello World > file")).with_working_dir(&cwd);
-        let bkt = Bkt::create(dir.path("cache"));
+        let bkt = Bkt::create(dir.path("cache")).unwrap();
         let (result, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.status, 0);
@@ -810,7 +809,7 @@ mod bkt_tests {
     fn with_env() {
         let dir = TestDir::temp().create("dir", FileType::Dir);
         let cmd = CommandDesc::new(vec!("bash", "-c", "echo \"FOO:${FOO:?}\"")).with_env_value("FOO", "bar");
-        let bkt = Bkt::create(dir.path("cache"));
+        let bkt = Bkt::create(dir.path("cache")).unwrap();
         let (result, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.status, 0);

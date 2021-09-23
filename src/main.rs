@@ -31,12 +31,20 @@ fn force_update_async() -> Result<()> {
 }
 
 // Runs bkt after main() handles flag parsing
-fn run(bkt: Bkt, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&OsStr>,
+fn run(root_dir: Option<PathBuf>, scope: Option<&str>, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&OsStr>,
        ttl: Duration, stale: Option<Duration>, warm: bool, force: bool) -> Result<i32> {
     assert!(!ttl.as_secs() > 0 || ttl.subsec_nanos() > 0, "--ttl cannot be zero"); // TODO use is_zero once stable
     if let Some(stale) = stale {
         assert!(!stale.as_secs() > 0 || stale.subsec_nanos() > 0, "--stale cannot be zero"); // TODO use is_zero once stable
         assert!(stale < ttl, "--stale must be less than --ttl");
+    }
+
+    let mut bkt = match root_dir {
+        Some(cache_dir) => Bkt::create(cache_dir)?,
+        None => Bkt::in_tmp()?,
+    };
+    if let Some(scope) = scope {
+        bkt = bkt.scoped(scope.into());
     }
 
     if use_cwd {
@@ -124,14 +132,8 @@ fn main() {
                    system's temp directory. Setting this to a directory backed by RAM or an SSD, \
                    such as a tmpfs partition, will significantly reduce caching overhead."))
         .get_matches();
-
-    let mut bkt = match matches.value_of("cache_dir").map(PathBuf::from) {
-        Some(cache_dir) => Bkt::create(cache_dir),
-        None => Bkt::in_tmp(),
-    };
-    if let Some(scope) = matches.value_of("scope") {
-        bkt = bkt.scoped(scope.into());
-    }
+    let root_dir = matches.value_of("cache_dir").map(PathBuf::from);
+    let scope = matches.value_of("scope");
     let command = CommandDesc::new(matches.values_of_os("command").expect("Required").collect::<Vec<_>>());
     let use_cwd = matches.is_present("cwd");
     let env = matches.values_of_os("env").map(|e| e.collect()).unwrap_or_else(BTreeSet::new);
@@ -149,7 +151,7 @@ fn main() {
 
     let force = matches.is_present("force");
 
-    match run(bkt, command, use_cwd, env, ttl, stale, warm, force) {
+    match run(root_dir, scope, command, use_cwd, env, ttl, stale, warm, force) {
         Ok(code) => exit(code),
         Err(msg) => {
             eprintln!("bkt: {:#}", msg);
