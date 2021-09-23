@@ -68,10 +68,9 @@ impl CommandDesc {
     /// ```
     /// let cmd = bkt::CommandDesc::new(&["pwd"]).with_working_dir("/tmp");
     /// ```
-    pub fn with_working_dir<P: AsRef<Path>>(&self, cwd: P) -> Self {
-        let mut ret = self.clone();
-        ret.cwd = Some(cwd.as_ref().into());
-        ret
+    pub fn with_working_dir<P: AsRef<Path>>(mut self, cwd: P) -> Self {
+        self.cwd = Some(cwd.as_ref().into());
+        self
     }
 
     /// Sets the working directory to the current process' working directory. This has no effect
@@ -91,7 +90,7 @@ impl CommandDesc {
     /// let cmd = bkt::CommandDesc::new(&["pwd"]).with_cwd()?;
     /// # Ok(()) }
     /// ```
-    pub fn with_cwd(&self) -> Result<Self> {
+    pub fn with_cwd(self) -> Result<Self> {
         Ok(self.with_working_dir(std::env::current_dir()?))
     }
 
@@ -101,11 +100,10 @@ impl CommandDesc {
     /// ```
     /// let cmd = bkt::CommandDesc::new(&["pwd"]).with_env_value("FOO", "bar");
     /// ```
-    pub fn with_env_value<K, V>(&self, key: K, value: V) -> Self
+    pub fn with_env_value<K, V>(mut self, key: K, value: V) -> Self
             where K: AsRef<OsStr>, V: AsRef<OsStr> {
-        let mut ret = self.clone();
-        ret.env.insert(key.as_ref().into(), value.as_ref().into());
-        ret
+        self.env.insert(key.as_ref().into(), value.as_ref().into());
+        self
     }
 
     /// Looks up the given environment variable in the current process' environment and, if set,
@@ -119,12 +117,12 @@ impl CommandDesc {
     /// ```
     /// let cmd = bkt::CommandDesc::new(&["date"]).with_env("TZ");
     /// ```
-    pub fn with_env<K>(&self, key: K) -> Self
+    pub fn with_env<K>(self, key: K) -> Self
             where K: AsRef<OsStr> {
-        if let Some(val) = std::env::var_os(&key) {
-            return self.with_env_value(&key, val);
+        match std::env::var_os(&key) {
+            Some(val) => self.with_env_value(&key, val),
+            None => self,
         }
-        self.clone() // no-op
     }
 
     /// Adds the given key/value pairs to the environment the command should be run from, and causes
@@ -140,17 +138,16 @@ impl CommandDesc {
     ///     ).collect();
     /// let cmd = bkt::CommandDesc::new(&["..."]).with_envs(&important_envs);
     /// ```
-    pub fn with_envs<I, K, V>(&self, envs: I) -> Self
+    pub fn with_envs<I, K, V>(mut self, envs: I) -> Self
         where
             I: IntoIterator<Item = (K, V)>,
             K: AsRef<OsStr>,
             V: AsRef<OsStr>,
     {
-        let mut ret = self.clone();
         for (ref key, ref val) in envs {
-            ret.env.insert(key.as_ref().into(), val.as_ref().into());
+            self.env.insert(key.as_ref().into(), val.as_ref().into());
         }
-        ret
+        self
     }
 
     fn cache_key(&self) -> String {
@@ -189,8 +186,8 @@ mod cmd_tests {
             CommandDesc::new(vec!("foo", "bar")),
             CommandDesc::new(vec!("foo", "b", "ar")),
             CommandDesc::new(vec!("foo", "b ar")),
-            CommandDesc::new(vec!("foo")).with_working_dir("/bar"),
-            CommandDesc::new(vec!("foo")).with_working_dir("/bar/baz"),
+            CommandDesc::new(vec!("foo")).with_working_dir("/bar").clone(),
+            CommandDesc::new(vec!("foo")).with_working_dir("/bar/baz").clone(),
             CommandDesc::new(vec!("foo")).with_env_value("a", "b"),
             CommandDesc::new(vec!("foo")).with_working_dir("/bar").with_env_value("a", "b"),
         );
