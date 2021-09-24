@@ -168,6 +168,20 @@ impl CommandDesc {
     }
 }
 
+impl From<&CommandDesc> for std::process::Command {
+    fn from(desc: &CommandDesc) -> Self {
+        let mut command = Command::new(&desc.args[0]);
+        command.args(&desc.args[1..]);
+        if let Some(cwd) = &desc.cwd {
+            command.current_dir(cwd);
+        }
+        if !desc.env.is_empty() {
+            command.envs(&desc.env);
+        }
+        command
+    }
+}
+
 #[cfg(test)]
 mod cmd_tests {
     use super::*;
@@ -663,21 +677,8 @@ impl Bkt {
         Ok(())
     }
 
-    // TODO make this a From impl
-    fn build_command(desc: &CommandDesc) -> Command {
-        let mut command = Command::new(&desc.args[0]);
-        command.args(&desc.args[1..]);
-        if let Some(cwd) = &desc.cwd {
-            command.current_dir(cwd);
-        }
-        if !desc.env.is_empty() {
-            command.envs(&desc.env);
-        }
-        command
-    }
-
     fn execute_subprocess(desc: &CommandDesc) -> Result<Invocation> {
-        let mut cmd = Bkt::build_command(&desc);
+        let mut cmd: std::process::Command = desc.into();
         let start = Instant::now();
         // TODO write to stdout/stderr while running, rather than after the process completes?
         // See https://stackoverflow.com/q/66060139
