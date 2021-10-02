@@ -360,7 +360,7 @@ impl Cache {
     #[cfg(feature = "debug")]
     fn serialize<W, T>(writer: W, value: &T) -> Result<()>
         where W: io::Write, T: ?Sized + Serialize {
-        Ok(serde_json::to_writer(writer, value)?)
+        Ok(serde_json::to_writer_pretty(writer, value)?)
     }
 
     #[cfg(not(feature = "debug"))]
@@ -632,6 +632,10 @@ pub struct Bkt {
 
 impl Bkt {
     /// Creates a new Bkt instance using the [`std::env::temp_dir`] as the cache location.
+    ///
+    /// # Errors
+    ///
+    /// If preparing the tmp cache directory fails.
     pub fn in_tmp() -> Result<Self> {
         Bkt::create(std::env::temp_dir())
     }
@@ -639,7 +643,11 @@ impl Bkt {
     /// Creates a new Bkt instance.
     ///
     /// The given `root_dir` will be used as the parent directory of the cache. It's recommended
-    /// this directory be in a tmpfs partition, and SSD, or similar so operations are fast.
+    /// this directory be in a tmpfs partition, on an SSD, or similar, so operations are fast.
+    ///
+    /// # Errors
+    ///
+    /// If preparing the cache directory under `root_dir` fails.
     pub fn create(root_dir: PathBuf) -> Result<Self> {
         // Note the cache is invalidated when the minor version changes
         // TODO use separate directories per user, like bash-cache
@@ -701,6 +709,11 @@ impl Bkt {
     /// If stale or not found the command is executed and the result is cached and then returned.
     /// A zero-duration age will be returned if this invocation refreshed the cache. A background
     /// cleanup thread will also run on cache misses to remove stale data.
+    ///
+    /// # Errors
+    ///
+    /// If looking up, deserializing, executing, or serializing the command fails. This generally
+    /// reflects a user error such as an invalid command.
     // TODO better name than execute?
     pub fn execute(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
         self._execute(command, ttl, true)
@@ -709,6 +722,11 @@ impl Bkt {
     /// See the documentation on `execute()`. This functions like `execute()` but does not attempt
     /// to clean up stale data. Prefer this method if you decide to manage cleanup yourself via
     /// `cleanup_once()` or `cleanup_thread()`.
+    ///
+    /// # Errors
+    ///
+    /// If looking up, deserializing, executing, or serializing the command fails. This generally
+    /// reflects a user error such as an invalid command.
     pub fn execute_without_cleanup(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
         self._execute(command, ttl, false)
     }
@@ -739,6 +757,11 @@ impl Bkt {
 
     /// Unconditionally executes the given command and caches the invocation for the given TTL.
     /// This can be used to "warm" the cache so that subsequent calls to `execute` are fast.
+    ///
+    /// # Errors
+    ///
+    /// If executing or serializing the command fails. This generally reflects a user error such as
+    /// an invalid command.
     pub fn refresh(&self, command: &CommandDesc, ttl: Duration) -> Result<Invocation> {
         let result = Bkt::execute_subprocess(command)?;
         self.cache.store(&result, ttl)?;
@@ -750,6 +773,12 @@ impl Bkt {
     /// before exiting. `execute_and_cleanup` can be used instead to only trigger a cleanup on a
     /// cache miss, avoiding the extra work on cache hits. Long-running applications should
     /// typically prefer `cleanup_thread` which triggers periodic cleanups.
+    ///
+    /// # Errors
+    ///
+    /// The Result returned by joining indicates whether there were any unexpected errors while
+    /// cleaning up. It should be Ok in all normal circumstances.
+    // TODO if cleanup should always succeed (or no-op) why return Result?
     pub fn cleanup_once(&self) -> std::thread::JoinHandle<Result<()>> {
         let cache = self.cache.clone();
         std::thread::spawn(move || { cache.cleanup() })
