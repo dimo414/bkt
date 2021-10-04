@@ -1,8 +1,10 @@
 [package]
 name = "bkt"
+# When updating the version number tag the commit in git
+# https://rust-lang.github.io/api-guidelines/documentation.html#release-notes-document-all-significant-changes-c-relnotes
 version = "0.3.1"
 authors = ["Michael Diamond <dimo414@gmail.com>"]
-description = "CLI to cache subprocess invocations"
+description = "CLI and Rust library for caching subprocess invocations"
 repository = "http://github.com/dimo414/bkt"
 homepage = "http://bkt.rs/"
 license = "MIT"

@@ -218,6 +218,8 @@ mod cmd_tests {
 }
 
 /// The outputs of a cached invocation of a [`CommandDesc`], akin to [`std::process::Output`].
+// TODO make these fields private, per C-STRUCT-PRIVATE
+// https://rust-lang.github.io/api-guidelines/future-proofing.html
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub struct Invocation {
     /// Used internally for cache key validation
@@ -252,6 +254,7 @@ impl Invocation {
 /// and deleting the file upon being dropped. Callers should beware that dropping is not guaranteed
 /// (e.g. if the program panics). When a conflicting lock file is found its age (mtime) is checked
 /// to detect stale locks leaked by a separate process that failed to properly drop its lock.
+#[derive(Debug)]
 struct FileLock {
     lock_file: PathBuf,
 }
@@ -334,7 +337,7 @@ use std::os::unix::fs::symlink;
 /// A file-system-backed cache for mapping `CommandDesc` keys to `Invocation` values for a given
 /// duration.
 // TODO make this a trait so we can swap out impls, namely an in-memory impl
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Cache {
     cache_dir: PathBuf,
     scope: Option<String>,
@@ -626,6 +629,7 @@ mod cache_tests {
 
 /// This struct is the main API entry point for the `bkt` library, allowing callers to invoke and
 /// cache subprocesses for later reuse.
+#[derive(Debug)]
 pub struct Bkt {
     cache: Cache,
 }
@@ -715,6 +719,9 @@ impl Bkt {
     /// If looking up, deserializing, executing, or serializing the command fails. This generally
     /// reflects a user error such as an invalid command.
     // TODO better name than execute?
+    // TODO per C-CALLER-CONTROL perhaps this should consume the CommandDesc rather than cloning it
+    // in execute_subprocess(). See https://rust-lang.github.io/api-guidelines/flexibility.html
+    // See also C-BUILDER in https://rust-lang.github.io/api-guidelines/type-safety.html
     pub fn execute(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
         self._execute(command, ttl, true)
     }
