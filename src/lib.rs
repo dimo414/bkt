@@ -190,8 +190,8 @@ mod cmd_tests {
             CommandDesc::new(vec!("foo", "bar")),
             CommandDesc::new(vec!("foo", "b", "ar")),
             CommandDesc::new(vec!("foo", "b ar")),
-            CommandDesc::new(vec!("foo")).with_working_dir("/bar").clone(),
-            CommandDesc::new(vec!("foo")).with_working_dir("/bar/baz").clone(),
+            CommandDesc::new(vec!("foo")).with_working_dir("/bar"),
+            CommandDesc::new(vec!("foo")).with_working_dir("/bar/baz"),
             CommandDesc::new(vec!("foo")).with_env_value("a", "b"),
             CommandDesc::new(vec!("foo")).with_working_dir("/bar").with_env_value("a", "b"),
         );
@@ -270,7 +270,7 @@ impl FileLock {
                                     return Err(Error::msg(format!(
                                         "Lock {} held by PID {} appears stale and may need to be deleted manually.",
                                         lock_file.display(),
-                                        std::fs::read_to_string(&lock_file).unwrap_or("unknown".into()))));
+                                        std::fs::read_to_string(&lock_file).unwrap_or_else(|_| "unknown".into()))));
                                 }
                             }
                         }
@@ -513,7 +513,7 @@ impl Cache {
                     let ttl_dir = entry?.path();
                     let ttl = Duration::from_secs(
                         ttl_dir.file_name().and_then(|s| s.to_str()).and_then(|s| s.parse().ok())
-                            .ok_or(Error::msg(format!("Invalid ttl directory {}", ttl_dir.display())))?);
+                            .ok_or_else(|| Error::msg(format!("Invalid ttl directory {}", ttl_dir.display())))?);
 
                     for entry in std::fs::read_dir(&ttl_dir)? {
                         let file = entry?.path();

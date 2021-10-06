@@ -31,6 +31,7 @@ fn force_update_async() -> Result<()> {
 }
 
 // Runs bkt after main() handles flag parsing
+#[allow(clippy::too_many_arguments)]
 fn run(root_dir: Option<PathBuf>, scope: Option<&str>, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&OsStr>,
        ttl: Duration, stale: Option<Duration>, warm: bool, force: bool) -> Result<i32> {
     assert!(!ttl.as_secs() > 0 || ttl.subsec_nanos() > 0, "--ttl cannot be zero"); // TODO use is_zero once stable
@@ -53,7 +54,7 @@ fn run(root_dir: Option<PathBuf>, scope: Option<&str>, mut command: CommandDesc,
     if !env_keys.is_empty() {
         let envs: BTreeMap<_,_> = std::env::vars_os()
             // `as &OsStr` required per https://stackoverflow.com/q/65549983/113632
-            .filter(|(k,_)| env_keys.contains(&k as &OsStr)).collect();
+            .filter(|(k,_)| env_keys.contains(k as &OsStr)).collect();
         command = command.with_envs(&envs);
     }
 
