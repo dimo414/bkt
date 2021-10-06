@@ -26,6 +26,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Error, Result};
 use serde::{Serialize, Deserialize};
+use serde::de::DeserializeOwned;
 
 /// Describes a command to be executed and cached. This struct also serves as the cache key.
 /// It consists of a command line invocation and, optionally, a working directory to execute in and
@@ -50,7 +51,7 @@ impl CommandDesc {
     /// ```
     /// let cmd = bkt::CommandDesc::new(&["echo", "Hello World!"]);
     /// ```
-    pub fn new<I, S>(command: I) -> Self where I: IntoIterator<Item = S>, S: Into<OsString> {
+    pub fn new<I, S>(command: I) -> Self where I: IntoIterator<Item=S>, S: Into<OsString> {
         let ret = CommandDesc {
             args: command.into_iter().map(Into::into).collect(),
             cwd: None,
@@ -117,8 +118,7 @@ impl CommandDesc {
     /// ```
     /// let cmd = bkt::CommandDesc::new(&["date"]).with_env("TZ");
     /// ```
-    pub fn with_env<K>(self, key: K) -> Self
-            where K: AsRef<OsStr> {
+    pub fn with_env<K>(self, key: K) -> Self where K: AsRef<OsStr> {
         match std::env::var_os(&key) {
             Some(val) => self.with_env_value(&key, val),
             None => self,
@@ -140,7 +140,7 @@ impl CommandDesc {
     /// ```
     pub fn with_envs<I, K, V>(mut self, envs: I) -> Self
         where
-            I: IntoIterator<Item = (K, V)>,
+            I: IntoIterator<Item=(K, V)>,
             K: AsRef<OsStr>,
             V: AsRef<OsStr>,
     {
@@ -149,22 +149,14 @@ impl CommandDesc {
         }
         self
     }
+}
 
-    fn cache_key(&self) -> String {
-        // The hash_map DefaultHasher is somewhat underspecified, but it notes that "hashes should
-        // not be relied upon over releases", which implies it is stable across multiple
-        // invocations of the same build....
-        let mut s = std::collections::hash_map::DefaultHasher::new();
-        self.hash(&mut s);
-        let hash = s.finish();
-        if cfg!(feature = "debug") {
-            let cmd_str: String = self.args.iter()
-                .map(|a| a.to_string_lossy()).collect::<Vec<_>>().join("-")
-                .chars().filter(|&c| c.is_alphanumeric() || c == '-').collect();
-            format!("{:.100}_{:16X}", cmd_str, hash)
-        } else {
-            format!("{:16X}", hash)
-        }
+impl CacheKey for CommandDesc {
+    fn debug_label(&self) -> Option<String> {
+        Some(self.args.iter()
+            .map(|a| a.to_string_lossy()).collect::<Vec<_>>().join("-")
+            .chars().filter(|&c| c.is_alphanumeric() || c == '-' || c == '_')
+            .take(100).collect())
     }
 }
 
@@ -186,11 +178,9 @@ impl From<&CommandDesc> for std::process::Command {
 mod cmd_tests {
     use super::*;
 
-    // Sanity-checking that CommandDesc::cache_key isn't changing over time. This test may need
-    // to be updated if the implementation changes in the future.
     #[test]
-    fn stable_hash() {
-        assert_eq!(CommandDesc::new(vec!("foo", "bar")).cache_key(), "E6152829B1A98275");
+    fn debug_label() {
+        assert_eq!(CommandDesc::new(vec!("foo", "bar", "b&r _- a")).debug_label(), Some("foo-bar-br_-a".into()));
     }
 
     #[test]
@@ -222,8 +212,6 @@ mod cmd_tests {
 // https://rust-lang.github.io/api-guidelines/future-proofing.html
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub struct Invocation {
-    /// Used internally for cache key validation
-    command: CommandDesc,
     /// The data that the process wrote to stdout.
     pub stdout: Vec<u8>,
     /// The data that the process wrote to stderr.
@@ -328,14 +316,50 @@ mod file_lock_tests {
     }
 }
 
+/// Trait allowing a type to be used as a cache key. It would be nice to blanket-implement
+/// this for all types that implement the dependent traits, but without a way for specific
+/// impls to opt-out of the blanket that would prevent customizing the debug_label().
+/// Specialization might resolve that issue, in the meantime it's fine since Cache is a
+/// private type anyways.
+trait CacheKey: std::fmt::Debug+Hash+PartialEq {
+    /// Label is added to the cache key when run with the debug feature, useful for diagnostics.
+    fn debug_label(&self) -> Option<String> { None }
+
+    /// Generates a string sufficiently unique to describe the key; typically just the hex encoding
+    /// of the key's hash code. Most impls should not need to override this.
+    fn cache_key(&self) -> String {
+        // The hash_map::DefaultHasher is somewhat underspecified, but it notes that "hashes should
+        // not be relied upon over releases", which implies it is stable across multiple
+        // invocations of the same build.... See cache_tests::stable_hash.
+        let mut s = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut s);
+        let hash = s.finish();
+        if cfg!(feature = "debug") {
+            if let Some(label) = self.debug_label() {
+                if !label.is_empty() {
+                    return format!("{}_{:16X}", label, hash);
+                }
+            }
+        }
+        format!("{:16X}", hash)
+    }
+}
+
+/// Container for serialized key/value pairs.
+#[derive(Serialize, Deserialize)]
+struct CacheEntry<K, V> {
+    key: K,
+    value: V,
+}
+
 // See https://doc.rust-lang.org/std/fs/fn.soft_link.html
 #[cfg(windows)]
 use std::os::windows::fs::symlink_file as symlink;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 
-/// A file-system-backed cache for mapping `CommandDesc` keys to `Invocation` values for a given
-/// duration.
+/// A file-system-backed cache for mapping keys (i.e. `CommandDesc`) to values (i.e. `Invocation`)
+/// for a given duration.
 // TODO make this a trait so we can swap out impls, namely an in-memory impl
 #[derive(Clone, Debug)]
 struct Cache {
@@ -356,25 +380,25 @@ impl Cache {
 
     #[cfg(not(feature = "debug"))]
     fn serialize<W, T>(writer: W, value: &T) -> Result<()>
-        where W: io::Write, T: ?Sized + Serialize {
+            where W: io::Write, T: Serialize + ?Sized {
         Ok(bincode::serialize_into(writer, value)?)
     }
 
     #[cfg(feature = "debug")]
     fn serialize<W, T>(writer: W, value: &T) -> Result<()>
-        where W: io::Write, T: ?Sized + Serialize {
+            where W: io::Write, T: Serialize + ?Sized {
         Ok(serde_json::to_writer_pretty(writer, value)?)
     }
 
     #[cfg(not(feature = "debug"))]
     fn deserialize<R, T>(reader: R) -> Result<T>
-        where R: std::io::Read, T: serde::de::DeserializeOwned {
+            where R: std::io::Read, T: DeserializeOwned {
         Ok(bincode::deserialize_from(reader)?)
     }
 
     #[cfg(feature = "debug")]
     fn deserialize<R, T>(reader: R) -> Result<T>
-        where R: std::io::Read, T: serde::de::DeserializeOwned {
+            where R: std::io::Read, T: DeserializeOwned {
         Ok(serde_json::from_reader(reader)?)
     }
 
@@ -394,9 +418,11 @@ impl Cache {
         self.cache_dir.join("data")
     }
 
-    fn lookup(&self, command: &CommandDesc, max_age: Duration)
-              -> Result<Option<(Invocation, SystemTime)>> {
-        let path = self.key_path(&command.cache_key());
+    /// Looks up the given key in the cache, returning the associated value and its age
+    /// if the data is found and is newer than the max_age.
+    fn lookup<K, V>(&self, key: &K, max_age: Duration) -> Result<Option<(V, SystemTime)>>
+            where K: CacheKey+DeserializeOwned, V: DeserializeOwned {
+        let path = self.key_path(&key.cache_key());
         let file = File::open(&path);
         if let Err(ref e) = file {
             if e.kind() == ErrorKind::NotFound {
@@ -405,19 +431,21 @@ impl Cache {
         }
         // Missing file is OK; other errors get propagated to the caller
         let reader = BufReader::new(file.context("Failed to access cache file")?);
-        let found: Invocation = Cache::deserialize(reader)?;
+        // TODO consider returning OK(None) if deserialization fails, which could happen if
+        //      different types hashed to the same key
+        let found: CacheEntry<K, V> = Cache::deserialize(reader)?;
         // Discard data that is too old
         let mtime = std::fs::metadata(&path)?.modified()?;
         let elapsed = mtime.elapsed();
         if elapsed.is_err() || elapsed.unwrap() > max_age {
-            std::fs::remove_file(&path).context("Failed to remove expired invocation data")?;
+            std::fs::remove_file(&path).context("Failed to remove expired data")?;
             return Ok(None);
         }
         // Ignore false-positive hits that happened to collide with the hash code
-        if &found.command != command {
+        if &found.key != key {
             return Ok(None);
         }
-        Ok(Some((found, mtime)))
+        Ok(Some((found.value, mtime)))
     }
 
     fn seconds_ceiling(duration: Duration) -> u64 {
@@ -432,21 +460,24 @@ impl Cache {
         dir.join(format!("{}.{}", label, rand_str))
     }
 
-    fn store(&self, invocation: &Invocation, ttl: Duration) -> Result<()> {
+    /// Write the given key/value pair to the cache, persisting it for at least the given TTL.
+    fn store<K, V>(&self, key: &K, value: &V, ttl: Duration) -> Result<()>
+            where K: CacheKey+Serialize, V: Serialize {
         assert!(!ttl.as_secs() > 0 || ttl.subsec_nanos() > 0, "ttl cannot be zero"); // TODO use is_zero once stable
         let ttl_dir = self.data_dir().join(Cache::seconds_ceiling(ttl).to_string());
         std::fs::create_dir_all(&ttl_dir)?;
         std::fs::create_dir_all(&self.key_dir())?;
-        let path = Cache::rand_filename(&ttl_dir, "invocation");
+        let path = Cache::rand_filename(&ttl_dir, "data");
         // Note: this will fail if filename collides, could retry in a loop if that happens
         let file = OpenOptions::new().create_new(true).write(true).open(&path)?;
-        Cache::serialize(BufWriter::new(&file), invocation)?;
+        let entry = CacheEntry{ key, value };
+        Cache::serialize(BufWriter::new(&file), &entry).context("Serialization failed")?;
         // Roundabout approach to an atomic symlink replacement
         // https://github.com/dimo414/bash-cache/issues/26
         let tmp_symlink = Cache::rand_filename(&self.key_dir(), "tmp-symlink");
         // Note: this will fail if filename collides, could retry in a loop if that happens
         symlink(&path, &tmp_symlink)?;
-        std::fs::rename(&tmp_symlink, self.key_path(&invocation.command.cache_key()))?;
+        std::fs::rename(&tmp_symlink, self.key_path(&entry.key.cache_key()))?;
         Ok(())
     }
 
@@ -512,6 +543,13 @@ mod cache_tests {
     use super::*;
     use test_dir::{TestDir, DirBuilder};
 
+    impl CacheKey for i32 {}
+    impl CacheKey for String {
+        fn debug_label(&self) -> Option<String> {
+            Some(self.clone())
+        }
+    }
+
     fn modtime<P: AsRef<Path>>(path: P) -> SystemTime {
         std::fs::metadata(&path).expect("No metadata").modified().expect("No modtime")
     }
@@ -549,80 +587,86 @@ mod cache_tests {
         paths.iter().map(|p| p.strip_prefix(dir.as_ref()).unwrap().display().to_string()).collect()
     }
 
-    fn inv(cmd: &CommandDesc, stdout: &str) -> Invocation {
-        Invocation{
-            command: cmd.clone(), stdout: stdout.into(),
-            stderr: "".into(), status: 0, runtime: Duration::from_secs(0), }
+    // Sanity-checking that cache_key's behavior is stable over time. This test may need to be
+    // updated when changing Rust versions / editions.
+    #[test]
+    fn stable_hash() {
+        assert_eq!(100.cache_key(), "7D208C81E8236995");
+        if cfg!(feature = "debug") {
+            assert_eq!("FooBar".to_string().cache_key(), "FooBar_2C8878C07E3ADA57");
+        } else {
+            assert_eq!("FooBar".to_string().cache_key(), "2C8878C07E3ADA57");
+        }
     }
 
     #[test]
     fn cache() {
         let dir = TestDir::temp();
-        let cmd = CommandDesc::new(vec!("foo"));
-        let inv = inv(&cmd, "A");
+        let key = "foo".to_string();
+        let val = "A".to_string();
         let cache = Cache::new(&dir.root());
 
-        let absent = cache.lookup(&cmd, Duration::from_secs(100)).unwrap();
+        let absent = cache.lookup::<_, String>(&key, Duration::from_secs(100)).unwrap();
         assert!(absent.is_none());
 
-        cache.store(&inv, Duration::from_secs(100)).unwrap();
-        let present = cache.lookup(&cmd, Duration::from_secs(100)).unwrap();
-        assert_eq!(present.unwrap().0.stdout_utf8(), "A");
+        cache.store(&key, &val, Duration::from_secs(100)).unwrap();
+        let present = cache.lookup::<_, String>(&key, Duration::from_secs(100)).unwrap();
+        assert_eq!(present.unwrap().0, "A");
     }
 
     #[test]
     fn lookup_ttls() {
         let dir = TestDir::temp();
-        let cmd = CommandDesc::new(vec!("foo"));
-        let inv = inv(&cmd, "A");
+        let key = "foo".to_string();
+        let val = "A".to_string();
         let cache = Cache::new(&dir.root());
 
-        cache.store(&inv, Duration::from_secs(5)).unwrap(); // store duration doesn't affect lookups
+        cache.store(&key, &val, Duration::from_secs(5)).unwrap(); // store duration doesn't affect lookups
         make_dir_stale(dir.root(), Duration::from_secs(15)).unwrap();
 
         // data is still present until a cleanup iteration runs, or a lookup() invalidates it
-        let present = cache.lookup(&cmd, Duration::from_secs(20)).unwrap();
-        assert_eq!(present.unwrap().0.stdout_utf8(), "A");
+        let present = cache.lookup::<_, String>(&key, Duration::from_secs(20)).unwrap();
+        assert_eq!(present.unwrap().0, "A");
         // lookup() finds stale data, deletes it
-        let absent = cache.lookup(&cmd, Duration::from_secs(10)).unwrap();
+        let absent = cache.lookup::<_, String>(&key, Duration::from_secs(10)).unwrap();
         assert!(absent.is_none());
         // now data is gone, even though this lookup() would have accepted it
-        let absent = cache.lookup(&cmd, Duration::from_secs(20)).unwrap();
+        let absent = cache.lookup::<_, String>(&key, Duration::from_secs(20)).unwrap();
         assert!(absent.is_none());
     }
 
     #[test]
     fn scoped() {
         let dir = TestDir::temp();
-        let cmd = CommandDesc::new(vec!("foo"));
-        let inv_a = inv(&cmd, "A");
-        let inv_b = inv(&cmd, "B");
+        let key = "foo".to_string();
+        let val_a = "A".to_string();
+        let val_b = "B".to_string();
         let cache = Cache::new(&dir.root());
         let cache_scoped = Cache::new(&dir.root()).scoped("scope".into());
 
-        cache.store(&inv_a, Duration::from_secs(100)).unwrap();
-        cache_scoped.store(&inv_b, Duration::from_secs(100)).unwrap();
+        cache.store(&key, &val_a, Duration::from_secs(100)).unwrap();
+        cache_scoped.store(&key, &val_b, Duration::from_secs(100)).unwrap();
 
-        let present = cache.lookup(&cmd, Duration::from_secs(20)).unwrap();
-        assert_eq!(present.unwrap().0.stdout_utf8(), "A");
-        let present_scoped = cache_scoped.lookup(&cmd, Duration::from_secs(20)).unwrap();
-        assert_eq!(present_scoped.unwrap().0.stdout_utf8(), "B");
+        let present = cache.lookup::<_, String>(&key, Duration::from_secs(20)).unwrap();
+        assert_eq!(present.unwrap().0, "A");
+        let present_scoped = cache_scoped.lookup::<_, String>(&key, Duration::from_secs(20)).unwrap();
+        assert_eq!(present_scoped.unwrap().0, "B");
     }
 
     #[test]
     fn cleanup() {
         let dir = TestDir::temp();
-        let cmd = CommandDesc::new(vec!("foo"));
-        let inv = inv(&cmd, "A");
+        let key = "foo".to_string();
+        let val = "A".to_string();
         let cache = Cache::new(&dir.root());
 
-        cache.store(&inv, Duration::from_secs(5)).unwrap();
+        cache.store(&key, &val, Duration::from_secs(5)).unwrap();
         make_dir_stale(dir.root(), Duration::from_secs(10)).unwrap();
         cache.cleanup().unwrap();
 
         assert_eq!(dir_contents(dir.root()), vec!("last_cleanup")); // keys and data dirs are now empty
 
-        let absent = cache.lookup(&cmd, Duration::from_secs(20)).unwrap();
+        let absent = cache.lookup::<_, String>(&key, Duration::from_secs(20)).unwrap();
         assert!(absent.is_none());
     }
 }
@@ -655,7 +699,7 @@ impl Bkt {
     pub fn create(root_dir: PathBuf) -> Result<Self> {
         // Note the cache is invalidated when the minor version changes
         // TODO use separate directories per user, like bash-cache
-        // See https://stackoverflow.com/q/57951893/113632
+        //      See https://stackoverflow.com/q/57951893/113632
         let cache_dir = root_dir
             .join(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")));
         Bkt::restrict_dir(&cache_dir)?;
@@ -698,7 +742,6 @@ impl Bkt {
             .with_context(|| format!("Failed to run command {}", desc.args[0].to_string_lossy()))?;
         let runtime = start.elapsed();
         Ok(Invocation {
-            command: desc.clone(),
             stdout: result.stdout,
             stderr: result.stderr,
             // TODO handle signals, see https://stackoverflow.com/q/66272686
@@ -739,7 +782,7 @@ impl Bkt {
     }
 
     fn _execute(&self, command: &CommandDesc, ttl: Duration, cleanup: bool) -> Result<(Invocation, Duration)> {
-        let cached = self.cache.lookup(command, ttl)?;
+        let cached = self.cache.lookup(command, ttl).context("Cache lookup failed")?;
         let result = match cached {
             Some((cached, mtime)) => (cached, mtime.elapsed()?),
             None => {
@@ -749,8 +792,8 @@ impl Bkt {
                     // be much faster than the actual background process.
                     cleanup_hook = Some(self.cleanup_once());
                 }
-                let result = Bkt::execute_subprocess(command)?;
-                self.cache.store(&result, ttl)?;
+                let result = Bkt::execute_subprocess(command).context("Subprocess execution failed")?;
+                self.cache.store(command, &result, ttl).context("Cache write failed")?;
                 if let Some(cleanup_hook) = cleanup_hook {
                     if let Err(e) = cleanup_hook.join().expect("cleanup thread panicked") {
                         eprintln!("bkt: cache cleanup failed: {:?}", e);
@@ -770,8 +813,8 @@ impl Bkt {
     /// If executing or serializing the command fails. This generally reflects a user error such as
     /// an invalid command.
     pub fn refresh(&self, command: &CommandDesc, ttl: Duration) -> Result<Invocation> {
-        let result = Bkt::execute_subprocess(command)?;
-        self.cache.store(&result, ttl)?;
+        let result = Bkt::execute_subprocess(command).context("Subprocess execution failed")?;
+        self.cache.store(command, &result, ttl).context("Cache write failed")?;
         Ok(result)
     }
 
@@ -843,6 +886,10 @@ mod bkt_tests {
     }
 
     #[test]
+    // TODO the JSON serializer doesn't support OsString keys, CommandDesc needs a custom Serializer
+    //      (for feature="debug", at least) - see https://stackoverflow.com/q/51276896/113632 and
+    //      https://github.com/serde-rs/json/issues/809
+    #[cfg(not(feature = "debug"))]
     fn with_env() {
         let dir = TestDir::temp().create("dir", FileType::Dir);
         let cmd = CommandDesc::new(vec!("bash", "-c", "echo \"FOO:${FOO:?}\"")).with_env_value("FOO", "bar");

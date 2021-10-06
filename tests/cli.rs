@@ -253,6 +253,7 @@ fn respects_cwd() {
 }
 
 #[test]
+#[cfg(not(feature = "debug"))] // See lib's bkt_tests::with_env
 fn respects_env() {
     let dir = TestDir::temp();
     let args = vec!("--", "bash", "-c", "printf 'foo:%s bar:%s baz:%s' \"$FOO\" \"$BAR\" \"$BAZ\"");
