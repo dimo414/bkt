@@ -75,8 +75,8 @@ fn run(root_dir: Option<PathBuf>, scope: Option<&str>, mut command: CommandDesc,
         }
     }
 
-    io::stdout().write_all(&invocation.stdout()).unwrap();
-    io::stderr().write_all(&invocation.stderr()).unwrap();
+    io::stdout().write_all(invocation.stdout()).unwrap();
+    io::stderr().write_all(invocation.stderr()).unwrap();
     Ok(invocation.exit_code())
 }
 
