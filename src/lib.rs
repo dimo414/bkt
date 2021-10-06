@@ -208,34 +208,40 @@ mod cmd_tests {
 }
 
 /// The outputs of a cached invocation of a [`CommandDesc`], akin to [`std::process::Output`].
-// TODO make these fields private, per C-STRUCT-PRIVATE
-// https://rust-lang.github.io/api-guidelines/future-proofing.html
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub struct Invocation {
-    /// The data that the process wrote to stdout.
-    pub stdout: Vec<u8>,
-    /// The data that the process wrote to stderr.
-    pub stderr: Vec<u8>,
-    /// The exit status of the program, or 126 if the program terminated without an exit status.
-    /// See [`ExitStatus::code()`](std::process::ExitStatus::code()). This is subject to change to
-    /// better support other termination states.
-    pub status: i32,
-    /// The time the process took to complete.
-    pub runtime: Duration,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    exit_code: i32,
+    runtime: Duration,
 }
 
 impl Invocation {
+    /// The data that the process wrote to stdout.
+    pub fn stdout(&self) -> &[u8] { &self.stdout }
+
     /// Helper to view stdout as a UTF-8 string. Use [`from_utf8`](std::str::from_utf8) directly if
     /// you need to handle output that may not be UTF-8.
     pub fn stdout_utf8(&self) -> &str {
         std::str::from_utf8(&self.stdout).expect("stdout not valid UTF-8")
     }
 
+    /// The data that the process wrote to stderr.
+    pub fn stderr(&self) -> &[u8] { &self.stderr }
+
     /// Helper to view stderr as a UTF-8 string. Use [`from_utf8`](std::str::from_utf8) directly if
     /// you need to handle output that may not be UTF-8.
     pub fn stderr_utf8(&self) -> &str {
         std::str::from_utf8(&self.stderr).expect("stderr not valid UTF-8")
     }
+
+    /// The exit code of the program, or 126 if the program terminated without an exit status.
+    /// See [`ExitStatus::code()`](std::process::ExitStatus::code()). This is subject to change to
+    /// better support other termination states.
+    pub fn exit_code(&self) -> i32 { self.exit_code }
+
+    /// The time the process took to complete.
+    pub fn runtime(&self) -> Duration { self.runtime }
 }
 
 /// A file-lock mechanism that holds a lock by atomically creating a file in the given directory,
@@ -745,7 +751,7 @@ impl Bkt {
             stdout: result.stdout,
             stderr: result.stderr,
             // TODO handle signals, see https://stackoverflow.com/q/66272686
-            status: result.status.code().unwrap_or(126),
+            exit_code: result.status.code().unwrap_or(126),
             runtime,
         })
     }
@@ -881,7 +887,7 @@ mod bkt_tests {
         let bkt = Bkt::create(dir.path("cache")).unwrap();
         let (result, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
-        assert_eq!(result.status, 0);
+        assert_eq!(result.exit_code(), 0);
         assert_eq!(std::fs::read_to_string(cwd.join("file")).unwrap(), "Hello World\n");
     }
 
@@ -896,7 +902,7 @@ mod bkt_tests {
         let bkt = Bkt::create(dir.path("cache")).unwrap();
         let (result, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
-        assert_eq!(result.status, 0);
+        assert_eq!(result.exit_code(), 0);
         assert_eq!(result.stdout_utf8(), "FOO:bar\n");
     }
 }
