@@ -1,6 +1,6 @@
 # `bkt`
 
-`bkt` is a subprocess caching utility written in Rust, inspired by
+`bkt` (pronounced "bucket") is a subprocess caching utility written in Rust, inspired by
 [bash-cache](https://github.com/dimo414/bash-cache).
 Wrapping expensive process invocations with `bkt` allows callers to reuse recent
 invocations without complicating their application logic. This can be useful in
