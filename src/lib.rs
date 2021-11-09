@@ -343,11 +343,11 @@ trait CacheKey: std::fmt::Debug+Hash+PartialEq {
         if cfg!(feature = "debug") {
             if let Some(label) = self.debug_label() {
                 if !label.is_empty() {
-                    return format!("{}_{:16X}", label, hash);
+                    return format!("{}_{:016X}", label, hash);
                 }
             }
         }
-        format!("{:16X}", hash)
+        format!("{:016X}", hash)
     }
 }
 
