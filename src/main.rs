@@ -93,7 +93,7 @@ fn main() {
             .long("time-to-live")
             .visible_alias("ttl")
             .default_value("60s")
-            .help("Duration the cached result will be valid for"))
+            .help("Duration the cached result will be valid"))
         .arg(Arg::with_name("stale")
             .long("stale")
             .takes_value(true)
