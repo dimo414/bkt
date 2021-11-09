@@ -1,7 +1,7 @@
 # `bkt`
 
-`bkt` (pronounced "bucket") is a subprocess caching utility written in Rust, inspired by
-[bash-cache](https://github.com/dimo414/bash-cache).
+`bkt` (pronounced "bucket") is a subprocess caching utility written in Rust,
+inspired by [bash-cache](https://github.com/dimo414/bash-cache).
 Wrapping expensive process invocations with `bkt` allows callers to reuse recent
 invocations without complicating their application logic. This can be useful in
 shell prompts, interactive applications such as [`fzf`](#fzf), and long-running
@@ -177,6 +177,31 @@ Note: one downside to using `bkt` is, currently, `bkt` doesn't
 [stream](https://github.com/junegunn/fzf/pull/2215) the backing process' output.
 This means when `bkt` has a cache miss the preview will be absent until the
 process completes, even if partial output could be displayed sooner.
+
+### Using `bkt` only if installed
+
+You may want to distribute shell scripts that utilize `bkt` without requiring
+every user also install `bkt`. By wrapping `bkt` in a shell function your script
+can cleanly invoke `bkt` if available without complicating your users' workflow.
+Of course if they choose to install `bkt` they'll get a faster script as a
+result!
+
+```
+# Cache commands using bkt if installed
+if command -v bkt >&/dev/null; then
+  bkt() { command bkt "$@"; }
+else
+  # If bkt isn't installed skip its arguments and just execute directly.
+  # Optionally write a msg to stderr suggesting users install bkt.
+  bkt() {
+    while [[ "$1" == --* ]]; do shift; done
+    "$@"
+  }
+fi
+
+# Now you can call bkt (the function) just like you'd call bkt (the binary):
+bkt -- expensive_cmd ...
+```
 
 ### Decorating commands with `bkt` in shell scripts
 
