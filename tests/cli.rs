@@ -29,7 +29,7 @@ fn bkt<P: AsRef<Path>>(cache_dir: P) -> Command {
     }
     assert!(path.exists(), "Could not find bkt binary in {:?}", dir);
     let mut bkt = Command::new(&path);
-    bkt.arg(format!("--cache_dir={}", cache_dir.as_ref().display()));
+    bkt.arg(format!("--cache-dir={}", cache_dir.as_ref().display()));
     bkt
 }
 

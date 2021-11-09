@@ -133,7 +133,7 @@ $ bkt --scope=foo -- date +%s.%N
 ### Changing the Cache Directory
 
 By default, cached data is stored under `/tmp` or a similar temporary directory,
-this can be customized via the `--cache_dir` flag. Note that the choice of
+this can be customized via the `--cache-dir` flag. Note that the choice of
 directory can affect `bkt`'s performance; if the cache is stored under a
 [`tmpfs`](https://en.wikipedia.org/wiki/Tmpfs) or solid-state partition it will
 be significantly faster than caching to a spinning disk.
@@ -144,7 +144,7 @@ The default cache directory is potentially world-readable. On Unix the cache
 directory is created with `700` permissions, meaning only the current user can
 access it, but this is not foolproof.
 
-You can customize the `--cache_dir` to a location you trust such as `~/.bkt`,
+You can customize the `--cache-dir` to a location you trust such as `~/.bkt`,
 but note that your home directory may be slower than the `TMPDIR` (see 
 [above](#cache_dir)). In general, if you are not the only user of your system
 it's wise to configure your `TMPDIR` to a location only you can access.
