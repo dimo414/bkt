@@ -28,6 +28,15 @@ use anyhow::{Context, Error, Result};
 use serde::{Serialize, Deserialize};
 use serde::de::DeserializeOwned;
 
+#[cfg(feature="debug")]
+macro_rules! debug_msg {
+    ($($arg:tt)*) => { eprintln!("bkt: {}", format!($($arg)*)) }
+}
+#[cfg(not(feature="debug"))]
+macro_rules! debug_msg {
+    ($($arg:tt)*) => {  }
+}
+
 /// Describes a command to be executed and cached. This struct also serves as the cache key.
 /// It consists of a command line invocation and, optionally, a working directory to execute in and
 /// environment variables to set. When set these fields contribute to the cache key, therefore two
@@ -155,7 +164,9 @@ impl CacheKey for CommandDesc {
     fn debug_label(&self) -> Option<String> {
         Some(self.args.iter()
             .map(|a| a.to_string_lossy()).collect::<Vec<_>>().join("-")
-            .chars().filter(|&c| c.is_alphanumeric() || c == '-' || c == '_')
+            .chars()
+            .map(|c| if c.is_whitespace() { '_' } else { c })
+            .filter(|&c| c.is_alphanumeric() || c == '-' || c == '_')
             .take(100).collect())
     }
 }
@@ -180,7 +191,7 @@ mod cmd_tests {
 
     #[test]
     fn debug_label() {
-        assert_eq!(CommandDesc::new(vec!("foo", "bar", "b&r _- a")).debug_label(), Some("foo-bar-br_-a".into()));
+        assert_eq!(CommandDesc::new(vec!("foo", "bar", "b&r _- a")).debug_label(), Some("foo-bar-br__-_a".into()));
     }
 
     #[test]
@@ -432,6 +443,7 @@ impl Cache {
         let file = File::open(&path);
         if let Err(ref e) = file {
             if e.kind() == ErrorKind::NotFound {
+                debug_msg!("lookup {} not found", path.display());
                 return Ok(None);
             }
         }
@@ -444,13 +456,16 @@ impl Cache {
         let mtime = std::fs::metadata(&path)?.modified()?;
         let elapsed = mtime.elapsed();
         if elapsed.is_err() || elapsed.unwrap() > max_age {
+            debug_msg!("lookup {} expired", path.display());
             std::fs::remove_file(&path).context("Failed to remove expired data")?;
             return Ok(None);
         }
         // Ignore false-positive hits that happened to collide with the hash code
         if &found.key != key {
+            debug_msg!("lookup {} hash collision", path.display());
             return Ok(None);
         }
+        debug_msg!("lookup {} found", path.display());
         Ok(Some((found.value, mtime)))
     }
 
@@ -478,12 +493,15 @@ impl Cache {
         let file = OpenOptions::new().create_new(true).write(true).open(&path)?;
         let entry = CacheEntry{ key, value };
         Cache::serialize(BufWriter::new(&file), &entry).context("Serialization failed")?;
+        debug_msg!("store data {}", path.display());
         // Roundabout approach to an atomic symlink replacement
         // https://github.com/dimo414/bash-cache/issues/26
         let tmp_symlink = Cache::rand_filename(&self.key_dir(), "tmp-symlink");
         // Note: this will fail if filename collides, could retry in a loop if that happens
         symlink(&path, &tmp_symlink)?;
-        std::fs::rename(&tmp_symlink, self.key_path(&entry.key.cache_key()))?;
+        let key_path = self.key_path(&entry.key.cache_key());
+        std::fs::rename(&tmp_symlink, &key_path)?;
+        debug_msg!("store key {}", key_path.display());
         Ok(())
     }
 
@@ -502,12 +520,14 @@ impl Cache {
             let last_attempt_file = self.cache_dir.join("last_cleanup");
             if let Ok(metadata) = last_attempt_file.metadata() {
                 if metadata.modified()?.elapsed()? < Duration::from_secs(30) {
+                    debug_msg!("cleanup skip recent");
                     return Ok(());
                 }
             }
             File::create(&last_attempt_file)?; // resets mtime if already exists
 
             // First delete stale data files
+            debug_msg!("cleanup data {}", &self.data_dir().display());
             if let Ok(data_dir_iter) = std::fs::read_dir(&self.data_dir()) {
                 for entry in data_dir_iter {
                     let ttl_dir = entry?.path();
@@ -525,6 +545,7 @@ impl Cache {
             }
 
             // Then delete broken symlinks
+            debug_msg!("cleanup keys {}", &self.key_dir().display());
             if let Ok(key_dir_iter) = std::fs::read_dir(&self.key_dir()) {
                 for entry in key_dir_iter {
                     let symlink = entry?.path();
