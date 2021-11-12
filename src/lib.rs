@@ -706,13 +706,17 @@ pub struct Bkt {
 }
 
 impl Bkt {
+    fn temp_dir() -> PathBuf {
+        std::env::var_os("BKT_TMPDIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+    }
+
     /// Creates a new Bkt instance using the [`std::env::temp_dir`] as the cache location.
     ///
     /// # Errors
     ///
     /// If preparing the tmp cache directory fails.
     pub fn in_tmp() -> Result<Self> {
-        Bkt::create(std::env::temp_dir())
+        Bkt::create(Bkt::temp_dir())
     }
 
     /// Creates a new Bkt instance.

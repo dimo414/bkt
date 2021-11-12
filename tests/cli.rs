@@ -29,7 +29,7 @@ fn bkt<P: AsRef<Path>>(cache_dir: P) -> Command {
     }
     assert!(path.exists(), "Could not find bkt binary in {:?}", dir);
     let mut bkt = Command::new(&path);
-    bkt.arg(format!("--cache-dir={}", cache_dir.as_ref().display()));
+    bkt.env("BKT_TMPDIR", cache_dir.as_ref().as_os_str());
     bkt
 }
 
@@ -191,11 +191,11 @@ fn respects_cache_dir() {
     let file = dir.path("file");
     let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
 
-    let first_call = succeed(bkt(dir.path("cache")).args(&args));
+    let first_call = succeed(bkt(dir.path("cache")).arg(format!("--cache-dir={}", dir.path("cache").display())).args(&args));
     assert_eq!(first_call, "1");
-    assert_eq!(first_call, succeed(bkt(dir.path("cache")).args(&args)));
+    assert_eq!(first_call, succeed(bkt(dir.path("cache")).arg(format!("--cache-dir={}", dir.path("cache").display())).args(&args)));
 
-    let diff_cache = succeed(bkt(dir.path("new-cache")).args(&args));
+    let diff_cache = succeed(bkt(dir.path("cache")).arg(format!("--cache-dir={}", dir.path("new-cache").display())).args(&args));
     assert_eq!(diff_cache, "2");
 }
 
@@ -368,14 +368,14 @@ fn force() {
     let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
     let args_force = join(vec!("--force"), &args);
 
-    let output = succeed(bkt(&dir.path("cache")).args(&args));
+    let output = succeed(bkt(dir.path("cache")).args(&args));
     assert_eq!(output, "1");
-    let output = succeed(bkt(&dir.path("cache")).args(&args));
+    let output = succeed(bkt(dir.path("cache")).args(&args));
     assert_eq!(output, "1");
 
-    let output = succeed(bkt(&dir.path("cache")).args(&args_force));
+    let output = succeed(bkt(dir.path("cache")).args(&args_force));
     assert_eq!(output, "2");
-    let output = succeed(bkt(&dir.path("cache")).args(&args));
+    let output = succeed(bkt(dir.path("cache")).args(&args));
     assert_eq!(output, "2");
 }
 
