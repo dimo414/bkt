@@ -16,3 +16,7 @@ jobs:
       run: cargo check --all-targets --verbose
     - name: Run tests
       run: cargo test --verbose
+    - name: Run benchmark
+      run: |
+        cargo build --release
+        ./benchmark.sh --bkt=target/release/bkt -- sleep 1
