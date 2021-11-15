@@ -23,8 +23,13 @@ time_quiet() {
 
 avg_floats() {
   # Maybe this whole script should just be written in Python...
-  # Or just implement it in main.rs?
-  python -c 'import sys; print(sum((float(arg) for arg in sys.argv[1:]))/(len(sys.argv)-1))' "$@"
+  # Or even just implement a --benchmark flag in main.rs?
+  python <(cat <<EOF
+import sys
+total = sum((float(arg) for arg in sys.argv[1:]))
+print("{:.4f}".format(total/(len(sys.argv)-1)))
+EOF
+    ) "$@"
 }
 
 exit_with_message() {
@@ -40,7 +45,7 @@ bkt_args=()
 cmd=()
 
 # Read benchmark flags
-while [[ "$1" == --* ]]; do
+while [[ "${1:-}" == --* ]]; do
   arg="$1" flag="${1%=*}" value=
   if [[ "$arg" == *=* ]]; then
     value="${1#*=}"
@@ -80,9 +85,11 @@ for bkt_arg in "${bkt_args[@]}"; do
 done
 
 # Execute benchmark
-printf "Benchmarking:\n\t%s\nwith:\n\t%s\n" \
-  "${cmd[*]}" \
-  "${full_bkt} ${bkt_args[*]}"
+printf 'Benchmarking:\n\t'
+printf '%q ' "${cmd[@]}"
+printf '\nwith:\n\t'
+printf '%q ' "${full_bkt}" "${bkt_args[@]}"
+printf '\n\n'
 
 # Ensure the cache dir exists and the bkt args are valid
 "$full_bkt" "${bkt_args[@]}" -- true || exit_with_message 1 "Invoking bkt failed"
