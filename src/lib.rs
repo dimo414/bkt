@@ -9,7 +9,7 @@
 //! # use std::time::Duration;
 //! let bkt = bkt::Bkt::in_tmp()?;
 //! let expensive_cmd = bkt::CommandDesc::new(&["wget", "http://example.com"]);
-//! let (result, age) = bkt.execute(&expensive_cmd, Duration::from_secs(3600))?;
+//! let (result, age) = bkt.retrieve(&expensive_cmd, Duration::from_secs(3600))?;
 //! do_something(result.stdout_utf8());
 //! # Ok(()) }
 //! ```
@@ -792,15 +792,14 @@ impl Bkt {
     ///
     /// If looking up, deserializing, executing, or serializing the command fails. This generally
     /// reflects a user error such as an invalid command.
-    // TODO better name than execute?
     // TODO per C-CALLER-CONTROL perhaps this should consume the CommandDesc rather than cloning it
-    // in execute_subprocess(). See https://rust-lang.github.io/api-guidelines/flexibility.html
-    // See also C-BUILDER in https://rust-lang.github.io/api-guidelines/type-safety.html
-    pub fn execute(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
-        self._execute(command, ttl, true)
+    //     in execute_subprocess(). See https://rust-lang.github.io/api-guidelines/flexibility.html
+    //     See also C-BUILDER in https://rust-lang.github.io/api-guidelines/type-safety.html
+    pub fn retrieve(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
+        self._retrieve(command, ttl, true)
     }
 
-    /// See the documentation on `execute()`. This functions like `execute()` but does not attempt
+    /// See the documentation on `retrieve()`. This functions like `retrieve()` but does not attempt
     /// to clean up stale data. Prefer this method if you decide to manage cleanup yourself via
     /// `cleanup_once()` or `cleanup_thread()`.
     ///
@@ -808,11 +807,11 @@ impl Bkt {
     ///
     /// If looking up, deserializing, executing, or serializing the command fails. This generally
     /// reflects a user error such as an invalid command.
-    pub fn execute_without_cleanup(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
-        self._execute(command, ttl, false)
+    pub fn retrieve_without_cleanup(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
+        self._retrieve(command, ttl, false)
     }
 
-    fn _execute(&self, command: &CommandDesc, ttl: Duration, cleanup: bool) -> Result<(Invocation, Duration)> {
+    fn _retrieve(&self, command: &CommandDesc, ttl: Duration, cleanup: bool) -> Result<(Invocation, Duration)> {
         let cached = self.cache.lookup(command, ttl).context("Cache lookup failed")?;
         let result = match cached {
             Some((cached, mtime)) => (cached, mtime.elapsed()?),
@@ -896,10 +895,10 @@ mod bkt_tests {
         let cmd = CommandDesc::new(
             vec!("bash", "-c", "echo \"$RANDOM\" > \"${1:?}\"; cat \"${1:?}\"", "arg0", file.to_str().unwrap()));
         let bkt = Bkt::create(dir.path("cache")).unwrap();
-        let (first_inv, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
+        let (first_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
 
         for _ in 1..3 {
-            let (subsequent_inv, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
+            let (subsequent_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
             assert_eq!(first_inv, subsequent_inv);
         }
     }
@@ -910,7 +909,7 @@ mod bkt_tests {
         let cwd = dir.path("dir");
         let cmd = CommandDesc::new(vec!("bash", "-c", "echo Hello World > file")).with_working_dir(&cwd);
         let bkt = Bkt::create(dir.path("cache")).unwrap();
-        let (result, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
+        let (result, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.exit_code(), 0);
         assert_eq!(std::fs::read_to_string(cwd.join("file")).unwrap(), "Hello World\n");
@@ -925,7 +924,7 @@ mod bkt_tests {
         let dir = TestDir::temp().create("dir", FileType::Dir);
         let cmd = CommandDesc::new(vec!("bash", "-c", "echo \"FOO:${FOO:?}\"")).with_env_value("FOO", "bar");
         let bkt = Bkt::create(dir.path("cache")).unwrap();
-        let (result, _) = bkt.execute(&cmd, Duration::from_secs(10)).unwrap();
+        let (result, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.exit_code(), 0);
         assert_eq!(result.stdout_utf8(), "FOO:bar\n");

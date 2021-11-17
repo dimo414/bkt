@@ -66,7 +66,7 @@ fn run(root_dir: Option<PathBuf>, scope: Option<&str>, mut command: CommandDesc,
     let (invocation, age) = if force {
         (bkt.refresh(&command, ttl)?, Duration::from_secs(0))
     } else {
-        bkt.execute(&command, ttl)?
+        bkt.retrieve(&command, ttl)?
     };
 
     if let Some(stale) = stale {
