@@ -16,8 +16,10 @@ jobs:
         args: --all-targets --all-features
     - name: Check
       run: cargo check --all-targets --verbose
-    - name: "Check: debug"
+    - name: Check (features=debug)
       run: cargo check --all-targets --verbose --features debug
+    - name: Check Documentation
+      run: cargo doc --no-deps --document-private-items
     - name: Tests
       run: cargo test --verbose
     - name: Benchmark
