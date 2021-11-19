@@ -1,7 +1,7 @@
 //! `bkt` (pronounced "bucket") is a library for caching subprocess executions. It enables reuse of
 //! expensive invocations across separate processes and supports synchronous and asynchronous
 //! refreshing, TTLs, and other functionality. `bkt` is also a standalone binary for use by shell
-//! scripts and other languages, see https://github.com/dimo414/bkt for binary details.
+//! scripts and other languages, see <https://github.com/dimo414/bkt> for binary details.
 //!
 //! ```no_run
 //! # fn do_something(_: &str) {}
@@ -703,9 +703,10 @@ mod cache_tests {
 
 /// This struct is the main API entry point for the `bkt` library, allowing callers to invoke and
 /// cache subprocesses for later reuse.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Bkt {
     cache: Cache,
+    cleanup_on_refresh: bool,
 }
 
 impl Bkt {
@@ -713,7 +714,8 @@ impl Bkt {
         std::env::var_os("BKT_TMPDIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
     }
 
-    /// Creates a new Bkt instance using the [`std::env::temp_dir`] as the cache location.
+    /// Creates a new Bkt instance using the [`std::env::temp_dir`] as the cache location. If a
+    /// `BKT_TMPDIR` environment variable is set that value will be preferred.
     ///
     /// # Errors
     ///
@@ -739,6 +741,7 @@ impl Bkt {
         Bkt::restrict_dir(&cache_dir)?;
         Ok(Bkt {
             cache: Cache::new(&cache_dir),
+            cleanup_on_refresh: true,
         })
     }
 
@@ -749,6 +752,15 @@ impl Bkt {
     /// sufficiently unique namespace.
     pub fn scoped(mut self, scope: String) -> Self {
         self.cache = self.cache.scoped(scope);
+        self
+    }
+
+    /// By default a background cleanup thread runs on cache misses and calls to [`Bkt::refresh()`]
+    /// to remove stale data. You may prefer to manage cleanup yourself if you expect frequent cache
+    /// misses and want to minimize the number of threads being created. See [`Bkt::cleanup_once()`]
+    /// and [`Bkt::cleanup_thread()`] if you set this to `false`.
+    pub fn cleanup_on_refresh(mut self, cleanup: bool) -> Self {
+        self.cleanup_on_refresh = cleanup;
         self
     }
 
@@ -788,8 +800,7 @@ impl Bkt {
     /// than the given TTL.
     ///
     /// If stale or not found the command is executed and the result is cached and then returned.
-    /// A zero-duration age will be returned if this invocation refreshed the cache. A background
-    /// cleanup thread will also run on cache misses to remove stale data.
+    /// A zero-duration age will be returned if this invocation refreshed the cache.
     ///
     /// # Errors
     ///
@@ -799,39 +810,14 @@ impl Bkt {
     //     in execute_subprocess(). See https://rust-lang.github.io/api-guidelines/flexibility.html
     //     See also C-BUILDER in https://rust-lang.github.io/api-guidelines/type-safety.html
     pub fn retrieve(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
-        self._retrieve(command, ttl, true)
-    }
-
-    /// See the documentation on `retrieve()`. This functions like `retrieve()` but does not attempt
-    /// to clean up stale data. Prefer this method if you decide to manage cleanup yourself via
-    /// `cleanup_once()` or `cleanup_thread()`.
-    ///
-    /// # Errors
-    ///
-    /// If looking up, deserializing, executing, or serializing the command fails. This generally
-    /// reflects a user error such as an invalid command.
-    pub fn retrieve_without_cleanup(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
-        self._retrieve(command, ttl, false)
-    }
-
-    fn _retrieve(&self, command: &CommandDesc, ttl: Duration, cleanup: bool) -> Result<(Invocation, Duration)> {
         let cached = self.cache.lookup(command, ttl).context("Cache lookup failed")?;
         let result = match cached {
             Some((cached, mtime)) => (cached, mtime.elapsed()?),
             None => {
-                let mut cleanup_hook = None;
-                if cleanup {
-                    // clean the cache in the background on a cache-miss; this will usually
-                    // be much faster than the actual background process.
-                    cleanup_hook = Some(self.cleanup_once());
-                }
+                let cleanup_hook = self.maybe_cleanup_once();
                 let result = Bkt::execute_subprocess(command).context("Subprocess execution failed")?;
                 self.cache.store(command, &result, ttl).context("Cache write failed")?;
-                if let Some(cleanup_hook) = cleanup_hook {
-                    if let Err(e) = cleanup_hook.join().expect("cleanup thread panicked") {
-                        eprintln!("bkt: cache cleanup failed: {:?}", e);
-                    }
-                }
+                Bkt::join_cleanup_thread(cleanup_hook);
                 (result, Duration::default())
             }
         };
@@ -846,9 +832,29 @@ impl Bkt {
     /// If executing or serializing the command fails. This generally reflects a user error such as
     /// an invalid command.
     pub fn refresh(&self, command: &CommandDesc, ttl: Duration) -> Result<Invocation> {
+        let cleanup_hook = self.maybe_cleanup_once();
         let result = Bkt::execute_subprocess(command).context("Subprocess execution failed")?;
         self.cache.store(command, &result, ttl).context("Cache write failed")?;
+        Bkt::join_cleanup_thread(cleanup_hook);
         Ok(result)
+    }
+
+    /// Clean the cache in the background on a cache-miss; this will usually
+    /// be much faster than the actual background process.
+    fn maybe_cleanup_once(&self) -> Option<std::thread::JoinHandle<Result<()>>> {
+        if self.cleanup_on_refresh {
+            Some(self.cleanup_once())
+        } else {
+            None
+        }
+    }
+
+    fn join_cleanup_thread(cleanup_hook: Option<std::thread::JoinHandle<Result<()>>>) {
+        if let Some(cleanup_hook) = cleanup_hook {
+            if let Err(e) = cleanup_hook.join().expect("cleanup thread panicked") {
+                eprintln!("bkt: cache cleanup failed: {:?}", e);
+            }
+        }
     }
 
     /// Initiates a single cleanup cycle of the cache, removing stale data in the background. This
@@ -890,6 +896,15 @@ impl Bkt {
 mod bkt_tests {
     use super::*;
     use test_dir::{TestDir, DirBuilder, FileType};
+
+    // Just validating that Bkt can be cloned to create siblings with different settings.
+    #[test]
+    fn cloneable() {
+        let dir = TestDir::temp();
+        let bkt = Bkt::create(dir.path("cache")).unwrap();
+        let _scoped = bkt.clone().scoped("scope".into());
+        let _no_cleanup = bkt.clone().cleanup_on_refresh(false);
+    }
 
     #[test]
     fn cached() {
