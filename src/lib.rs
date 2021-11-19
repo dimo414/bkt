@@ -371,7 +371,10 @@ struct CacheEntry<K, V> {
 
 // See https://doc.rust-lang.org/std/fs/fn.soft_link.html
 #[cfg(windows)]
-use std::os::windows::fs::symlink_file as symlink;
+fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    std::os::windows::fs::symlink_file(original, link)
+        .context("Windows prevents most programs from creating symlinks; see https://github.com/dimo414/bkt/issues/3")
+}
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 
