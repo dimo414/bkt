@@ -750,7 +750,7 @@ impl Bkt {
     }
 
     #[cfg(not(unix))]
-    fn restrict_dir(cache_dir: &Path) -> Result<()> { Ok(()) }
+    fn restrict_dir(_cache_dir: &Path) -> Result<()> { Ok(()) }
     #[cfg(unix)]
     fn restrict_dir(cache_dir: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
