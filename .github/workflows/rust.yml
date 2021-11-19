@@ -1,8 +1,10 @@
 name: Rust
 
-on: [push]
+on: [push, pull_request]
 
-# See https://github.com/sharkdp/bat/blob/master/.github/workflows/CICD.yml for a more intricate CI/CD
+# See https://rust-cli.github.io/book/tutorial/packaging.html#building-binary-releases-on-ci and
+# https://github.com/sharkdp/bat/blob/master/.github/workflows/CICD.yml for a more intricate CI/CD
+
 jobs:
   CI:
     runs-on: ubuntu-latest
@@ -14,9 +16,44 @@ jobs:
         args: --all-targets --all-features
     - name: Check
       run: cargo check --all-targets --verbose
-    - name: Run tests
+    - name: "Check: debug"
+      run: cargo check --all-targets --verbose --features debug
+    - name: Tests
       run: cargo test --verbose
-    - name: Run benchmark
+    - name: Benchmark
       run: |
         cargo build --release
         ./benchmark.sh --bkt=target/release/bkt -- sleep 1
+
+  CD:
+    needs: CI
+    name: CD (${{ matrix.arch.target }} - ${{ matrix.arch.os }})
+    runs-on: ${{ matrix.arch.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - { target: arm-unknown-linux-gnueabihf , os: ubuntu-20.04, use-cross: true                }
+          - { target: i686-unknown-linux-gnu      , os: ubuntu-20.04, use-cross: true                }
+          - { target: x86_64-apple-darwin         , os: macos-10.15                                  }
+          - { target: x86_64-pc-windows-msvc      , os: windows-2019                  , suffix: .exe }
+          - { target: x86_64-unknown-linux-gnu    , os: ubuntu-20.04                                 }
+    steps:
+      - uses: actions/checkout@v2
+      - name: Extract crate information
+        shell: bash
+        run: |
+          echo "PROJECT_NAME=$(sed -n 's/^name = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_ENV"
+          echo "PROJECT_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)" >> "$GITHUB_ENV"
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: ${{ matrix.arch.use-cross }}
+          command: build
+          args: --release --target=${{ matrix.arch.target }}
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@master
+        with:
+          name: '${{ env.PROJECT_NAME }}.v${{ env.PROJECT_VERSION }}.${{ matrix.arch.target }}'
+          path: 'target/${{ matrix.arch.target }}/release/${{ env.PROJECT_NAME }}${{ matrix.arch.suffix }}'
