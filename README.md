@@ -17,7 +17,10 @@ Run `cargo install bkt` to compile and install `bkt` locally. You will need to
 [install `cargo`](https://doc.rust-lang.org/cargo/getting-started/installation.html)
 if it's not already on your system.
 
-Pre-compiled binaries for common platforms will be posted to GitHub soon.
+Pre-compiled binaries for common platforms are attached to each
+[release](https://github.com/dimo414/bkt/releases) (starting with 0.5). Please
+open an issue or send a PR if you would like releases to include binaries for
+additional platforms.
 
 ## Usage
 
