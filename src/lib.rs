@@ -920,6 +920,7 @@ mod bkt_tests {
 
     // Just validating that Bkt can be cloned to create siblings with different settings.
     #[test]
+    #[allow(clippy::redundant_clone)]
     fn cloneable() {
         let dir = TestDir::temp();
         let bkt = Bkt::create(dir.path("cache")).unwrap();
