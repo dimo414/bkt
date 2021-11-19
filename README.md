@@ -129,6 +129,19 @@ $ bkt --scope=foo -- date +%s.%N
 1631992418.010562000
 ```
 
+### Discarding Failed Invocations
+
+By default, all invocations are cached regardless of their output or exit code.
+In situations where failures should not be cached pass `--discard-failures` to
+only persist successful invocations (those that return a `0` exit code).
+
+**WARNING:** Passing this flag can cause the backing command to be invoked more
+frequently than the `--ttl` would suggest, which in turn can create unexpected
+load. If the backing command is failing due to an outage or bug (such as an
+overloaded website) triggering additional calls can exacerbate the issue and
+effectively DDoS the hampered system. It is generally safer *not* to set this
+flag and instead make the client robust to occasional failures. 
+
 <a name="cache_dir"></a>
 ### Changing the Cache Directory
 

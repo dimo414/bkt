@@ -32,8 +32,9 @@ fn force_update_async() -> Result<()> {
 
 // Runs bkt after main() handles flag parsing
 #[allow(clippy::too_many_arguments)]
-fn run(root_dir: Option<PathBuf>, scope: Option<&str>, mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&OsStr>,
-       ttl: Duration, stale: Option<Duration>, warm: bool, force: bool) -> Result<i32> {
+fn run(root_dir: Option<PathBuf>, discard_failures: bool, scope: Option<&str>,
+       mut command: CommandDesc, use_cwd: bool, env_keys: BTreeSet<&OsStr>, ttl: Duration,
+       stale: Option<Duration>, warm: bool, force: bool) -> Result<i32> {
     assert!(!ttl.as_secs() > 0 || ttl.subsec_nanos() > 0, "--ttl cannot be zero"); // TODO use is_zero once stable
     if let Some(stale) = stale {
         assert!(!stale.as_secs() > 0 || stale.subsec_nanos() > 0, "--stale cannot be zero"); // TODO use is_zero once stable
@@ -44,6 +45,7 @@ fn run(root_dir: Option<PathBuf>, scope: Option<&str>, mut command: CommandDesc,
         Some(cache_dir) => Bkt::create(cache_dir)?,
         None => Bkt::in_tmp()?,
     };
+    bkt = bkt.discard_failures(discard_failures);
     if let Some(scope) = scope {
         bkt = bkt.scoped(scope.into());
     }
@@ -121,6 +123,11 @@ fn main() {
             .multiple(true)
             .help("Includes the given environment variable in the cache key, so that the same \
                    command run with different values for the given variables caches separately"))
+        .arg(Arg::with_name("discard-failures")
+            .long("discard-failures")
+            .help("Don't cache invocations that fail (non-zero exit code). USE CAUTION when \
+                      passing this flag, as unexpected failures can lead to a spike in invocations \
+                      which can exacerbate ongoing issues, effectively a DDoS."))
         .arg(Arg::with_name("scope")
             .long("scope")
             .takes_value(true)
@@ -134,6 +141,7 @@ fn main() {
                    such as a tmpfs partition, will significantly reduce caching overhead."))
         .get_matches();
     let root_dir = matches.value_of("cache_dir").map(PathBuf::from);
+    let discard_failures = matches.is_present("discard-failures");
     let scope = matches.value_of("scope");
     let command = CommandDesc::new(matches.values_of_os("command").expect("Required").collect::<Vec<_>>());
     let use_cwd = matches.is_present("cwd");
@@ -152,7 +160,7 @@ fn main() {
 
     let force = matches.is_present("force");
 
-    match run(root_dir, scope, command, use_cwd, env, ttl, stale, warm, force) {
+    match run(root_dir, discard_failures, scope, command, use_cwd, env, ttl, stale, warm, force) {
         Ok(code) => exit(code),
         Err(msg) => {
             eprintln!("bkt: {:#}", msg);

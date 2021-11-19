@@ -707,6 +707,7 @@ mod cache_tests {
 pub struct Bkt {
     cache: Cache,
     cleanup_on_refresh: bool,
+    persist_failures: bool,
 }
 
 impl Bkt {
@@ -742,6 +743,7 @@ impl Bkt {
         Ok(Bkt {
             cache: Cache::new(&cache_dir),
             cleanup_on_refresh: true,
+            persist_failures: true,
         })
     }
 
@@ -761,6 +763,21 @@ impl Bkt {
     /// and [`Bkt::cleanup_thread()`] if you set this to `false`.
     pub fn cleanup_on_refresh(mut self, cleanup: bool) -> Self {
         self.cleanup_on_refresh = cleanup;
+        self
+    }
+
+    /// Configures this instance to not cache invocations that return non-zero exit codes. This only
+    /// affects _writing_ to the cache; if a failed invocation has already been cached (e.g. by a
+    /// different instance) that data will still be used until it expires.
+    ///
+    /// **WARNING:** use this function with caution. Discarding invocations that fail can overload
+    /// downstream resources that were protected by the caching layer limiting QPS. For example,
+    /// if a website is rejecting a fraction of requests to shed load and then clients start
+    /// sending _more_ requests when their attempts fail the website could be taken down outright by
+    /// the added load. In other words, using this function can lead to accidental DDoSes.
+    pub fn discard_failures(mut self, discard_failures: bool) -> Self {
+        // Flip the boolean here to make the conditional in retrieve() clearer
+        self.persist_failures = !discard_failures;
         self
     }
 
@@ -816,7 +833,9 @@ impl Bkt {
             None => {
                 let cleanup_hook = self.maybe_cleanup_once();
                 let result = Bkt::execute_subprocess(command).context("Subprocess execution failed")?;
-                self.cache.store(command, &result, ttl).context("Cache write failed")?;
+                if self.persist_failures || result.exit_code == 0 {
+                    self.cache.store(command, &result, ttl).context("Cache write failed")?;
+                }
                 Bkt::join_cleanup_thread(cleanup_hook);
                 (result, Duration::default())
             }
@@ -834,7 +853,9 @@ impl Bkt {
     pub fn refresh(&self, command: &CommandDesc, ttl: Duration) -> Result<Invocation> {
         let cleanup_hook = self.maybe_cleanup_once();
         let result = Bkt::execute_subprocess(command).context("Subprocess execution failed")?;
-        self.cache.store(command, &result, ttl).context("Cache write failed")?;
+        if self.persist_failures || result.exit_code == 0 {
+            self.cache.store(command, &result, ttl).context("Cache write failed")?;
+        }
         Bkt::join_cleanup_thread(cleanup_hook);
         Ok(result)
     }
@@ -919,6 +940,38 @@ mod bkt_tests {
             let (subsequent_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
             assert_eq!(first_inv, subsequent_inv);
         }
+    }
+
+    #[test]
+    fn discard_failures() {
+        let dir = TestDir::temp();
+        let output = dir.path("output");
+        let code = dir.path("code");
+
+        let cmd = CommandDesc::new(
+            vec!("bash", "-c", "cat \"${1:?}\"; exit \"$(< \"${2:?}\")\"", "arg0", output.to_str().unwrap(), code.to_str().unwrap()));
+        let bkt = Bkt::create(dir.path("cache")).unwrap().discard_failures(true);
+
+        write!(File::create(&output).unwrap(), "A").unwrap();
+        write!(File::create(&code).unwrap(), "10").unwrap();
+        let (first_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(first_inv.exit_code, 10, "{:?}\nstderr:{}", first_inv, first_inv.stderr_utf8());
+        assert_eq!(first_inv.stdout_utf8(), "A");
+
+        write!(File::create(&output).unwrap(), "B").unwrap();
+        let (subsequent_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        // call is not cached
+        assert_eq!(subsequent_inv.stdout_utf8(), "B");
+
+        write!(File::create(&output).unwrap(), "C").unwrap();
+        write!(File::create(&code).unwrap(), "0").unwrap();
+        let (success_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(success_inv.exit_code, 0);
+        assert_eq!(success_inv.stdout_utf8(), "C");
+
+        write!(File::create(&output).unwrap(), "D").unwrap();
+        let (cached_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(success_inv, cached_inv);
     }
 
     #[test]
