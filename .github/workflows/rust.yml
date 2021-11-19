@@ -19,6 +19,8 @@ jobs:
     - name: Check (features=debug)
       run: cargo check --all-targets --verbose --features debug
     - name: Check Documentation
+      env:
+        RUSTDOCFLAGS: -D warnings
       run: cargo doc --no-deps --document-private-items
     - name: Tests
       run: cargo test --verbose
