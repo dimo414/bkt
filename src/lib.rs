@@ -8,7 +8,7 @@
 //! # fn main() -> anyhow::Result<()> {
 //! # use std::time::Duration;
 //! let bkt = bkt::Bkt::in_tmp()?;
-//! let expensive_cmd = bkt::CommandDesc::new(&["wget", "http://example.com"]);
+//! let expensive_cmd = bkt::CommandDesc::new(["wget", "http://example.com"]);
 //! let (result, age) = bkt.retrieve(&expensive_cmd, Duration::from_secs(3600))?;
 //! do_something(result.stdout_utf8());
 //! # Ok(()) }
@@ -43,9 +43,9 @@ macro_rules! debug_msg {
 /// invocations with different working directories set will be cached separately.
 ///
 /// ```
-/// let cmd = bkt::CommandDesc::new(&["echo", "Hello World!"]);
-/// let with_cwd = bkt::CommandDesc::new(&["ls"]).with_working_dir("/tmp");
-/// let with_env = bkt::CommandDesc::new(&["date"]).with_env_value("TZ", "America/New_York");
+/// let cmd = bkt::CommandDesc::new(["echo", "Hello World!"]);
+/// let with_cwd = bkt::CommandDesc::new(["ls"]).with_working_dir("/tmp");
+/// let with_env = bkt::CommandDesc::new(["date"]).with_env_value("TZ", "America/New_York");
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct CommandDesc {
@@ -58,7 +58,7 @@ impl CommandDesc {
     /// Constructs a CommandDesc instance for the given command line.
     ///
     /// ```
-    /// let cmd = bkt::CommandDesc::new(&["echo", "Hello World!"]);
+    /// let cmd = bkt::CommandDesc::new(["echo", "Hello World!"]);
     /// ```
     pub fn new<I, S>(command: I) -> Self where I: IntoIterator<Item=S>, S: Into<OsString> {
         let ret = CommandDesc {
@@ -76,7 +76,7 @@ impl CommandDesc {
     /// directories.
     ///
     /// ```
-    /// let cmd = bkt::CommandDesc::new(&["pwd"]).with_working_dir("/tmp");
+    /// let cmd = bkt::CommandDesc::new(["pwd"]).with_working_dir("/tmp");
     /// ```
     pub fn with_working_dir<P: AsRef<Path>>(mut self, cwd: P) -> Self {
         self.cwd = Some(cwd.as_ref().into());
@@ -97,7 +97,7 @@ impl CommandDesc {
     ///
     /// ```
     /// # fn main() -> anyhow::Result<()> {
-    /// let cmd = bkt::CommandDesc::new(&["pwd"]).with_cwd()?;
+    /// let cmd = bkt::CommandDesc::new(["pwd"]).with_cwd()?;
     /// # Ok(()) }
     /// ```
     pub fn with_cwd(self) -> Result<Self> {
@@ -108,7 +108,7 @@ impl CommandDesc {
     /// this pair to be included in the cache key.
     ///
     /// ```
-    /// let cmd = bkt::CommandDesc::new(&["pwd"]).with_env_value("FOO", "bar");
+    /// let cmd = bkt::CommandDesc::new(["pwd"]).with_env_value("FOO", "bar");
     /// ```
     pub fn with_env_value<K, V>(mut self, key: K, value: V) -> Self
             where K: AsRef<OsStr>, V: AsRef<OsStr> {
@@ -125,7 +125,7 @@ impl CommandDesc {
     /// no-op, and the cache key will remain unchanged.
     ///
     /// ```
-    /// let cmd = bkt::CommandDesc::new(&["date"]).with_env("TZ");
+    /// let cmd = bkt::CommandDesc::new(["date"]).with_env("TZ");
     /// ```
     pub fn with_env<K>(self, key: K) -> Self where K: AsRef<OsStr> {
         match std::env::var_os(&key) {
@@ -145,7 +145,7 @@ impl CommandDesc {
     ///     env::vars().filter(|&(ref k, _)|
     ///         k == "TERM" || k == "TZ" || k == "LANG" || k == "PATH"
     ///     ).collect();
-    /// let cmd = bkt::CommandDesc::new(&["..."]).with_envs(&important_envs);
+    /// let cmd = bkt::CommandDesc::new(["..."]).with_envs(&important_envs);
     /// ```
     pub fn with_envs<I, K, V>(mut self, envs: I) -> Self
         where
@@ -191,25 +191,25 @@ mod cmd_tests {
 
     #[test]
     fn debug_label() {
-        assert_eq!(CommandDesc::new(vec!("foo", "bar", "b&r _- a")).debug_label(), Some("foo-bar-br__-_a".into()));
+        assert_eq!(CommandDesc::new(["foo", "bar", "b&r _- a"]).debug_label(), Some("foo-bar-br__-_a".into()));
     }
 
     #[test]
     fn collisions() {
-        let commands = vec!(
-            CommandDesc::new(vec!("foo")),
-            CommandDesc::new(vec!("foo", "bar")),
-            CommandDesc::new(vec!("foo", "b", "ar")),
-            CommandDesc::new(vec!("foo", "b ar")),
-            CommandDesc::new(vec!("foo")).with_working_dir("/bar"),
-            CommandDesc::new(vec!("foo")).with_working_dir("/bar/baz"),
-            CommandDesc::new(vec!("foo")).with_env_value("a", "b"),
-            CommandDesc::new(vec!("foo")).with_working_dir("/bar").with_env_value("a", "b"),
-        );
+        let commands = [
+            CommandDesc::new(["foo"]),
+            CommandDesc::new(["foo", "bar"]),
+            CommandDesc::new(["foo", "b", "ar"]),
+            CommandDesc::new(["foo", "b ar"]),
+            CommandDesc::new(["foo"]).with_working_dir("/bar"),
+            CommandDesc::new(["foo"]).with_working_dir("/bar/baz"),
+            CommandDesc::new(["foo"]).with_env_value("a", "b"),
+            CommandDesc::new(["foo"]).with_working_dir("/bar").with_env_value("a", "b"),
+        ];
 
         // https://old.reddit.com/r/rust/comments/2koptu/best_way_to_visit_all_pairs_in_a_vec/clnhxr5/
         let mut iter = commands.iter();
-        for a in commands.iter() {
+        for a in &commands {
             iter.next();
             for b in iter.clone() {
                 assert_ne!(a.cache_key(), b.cache_key(), "{:?} and {:?} have equivalent hashes", a, b);
@@ -480,7 +480,7 @@ impl Cache {
     fn rand_filename(dir: &Path, label: &str) -> PathBuf {
         use rand::{thread_rng, Rng};
         use rand::distributions::Alphanumeric;
-        let rand_str: String = thread_rng().sample_iter(&Alphanumeric).take(16).map(char::from).collect();
+        let rand_str: String = thread_rng().sample_iter(Alphanumeric).take(16).map(char::from).collect();
         dir.join(format!("{}.{}", label, rand_str))
     }
 
@@ -612,7 +612,7 @@ mod cache_tests {
             }
             Ok(())
         }
-        let mut paths = vec!();
+        let mut paths = vec![];
         contents(dir.as_ref(), &mut paths).unwrap();
         paths.iter().map(|p| p.strip_prefix(dir.as_ref()).unwrap().display().to_string()).collect()
     }
@@ -694,7 +694,7 @@ mod cache_tests {
         make_dir_stale(dir.root(), Duration::from_secs(10)).unwrap();
         cache.cleanup().unwrap();
 
-        assert_eq!(dir_contents(dir.root()), vec!("last_cleanup")); // keys and data dirs are now empty
+        assert_eq!(dir_contents(dir.root()), ["last_cleanup"]); // keys and data dirs are now empty
 
         let absent = cache.lookup::<_, String>(&key, Duration::from_secs(20)).unwrap();
         assert!(absent.is_none());
@@ -933,7 +933,7 @@ mod bkt_tests {
         let dir = TestDir::temp();
         let file = dir.path("file");
         let cmd = CommandDesc::new(
-            vec!("bash", "-c", "echo \"$RANDOM\" > \"${1:?}\"; cat \"${1:?}\"", "arg0", file.to_str().unwrap()));
+            ["bash", "-c", r#"echo "$RANDOM" > "${1:?}"; cat "${1:?}""#, "arg0", file.to_str().unwrap()]);
         let bkt = Bkt::create(dir.path("cache")).unwrap();
         let (first_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
 
@@ -950,7 +950,7 @@ mod bkt_tests {
         let code = dir.path("code");
 
         let cmd = CommandDesc::new(
-            vec!("bash", "-c", "cat \"${1:?}\"; exit \"$(< \"${2:?}\")\"", "arg0", output.to_str().unwrap(), code.to_str().unwrap()));
+            ["bash", "-c", r#"cat "${1:?}"; exit "$(< "${2:?}")""#, "arg0", output.to_str().unwrap(), code.to_str().unwrap()]);
         let bkt = Bkt::create(dir.path("cache")).unwrap().discard_failures(true);
 
         write!(File::create(&output).unwrap(), "A").unwrap();
@@ -979,7 +979,7 @@ mod bkt_tests {
     fn with_working_dir() {
         let dir = TestDir::temp().create("dir", FileType::Dir);
         let cwd = dir.path("dir");
-        let cmd = CommandDesc::new(vec!("bash", "-c", "echo Hello World > file")).with_working_dir(&cwd);
+        let cmd = CommandDesc::new(["bash", "-c", "echo Hello World > file"]).with_working_dir(&cwd);
         let bkt = Bkt::create(dir.path("cache")).unwrap();
         let (result, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
@@ -994,7 +994,7 @@ mod bkt_tests {
     #[cfg(not(feature = "debug"))]
     fn with_env() {
         let dir = TestDir::temp().create("dir", FileType::Dir);
-        let cmd = CommandDesc::new(vec!("bash", "-c", "echo \"FOO:${FOO:?}\"")).with_env_value("FOO", "bar");
+        let cmd = CommandDesc::new(["bash", "-c", r#"echo "FOO:${FOO:?}""#]).with_env_value("FOO", "bar");
         let bkt = Bkt::create(dir.path("cache")).unwrap();
         let (result, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");

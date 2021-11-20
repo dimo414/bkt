@@ -1,5 +1,3 @@
-#[macro_use] extern crate clap;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::io::{self, Write};
@@ -8,7 +6,7 @@ use std::process::{Command, exit, Stdio};
 use std::time::{Duration};
 
 use anyhow::{Context, Result};
-use clap::{Arg, App};
+use clap::{crate_description, crate_name, crate_version, value_t_or_exit, Arg, App};
 
 use bkt::{CommandDesc, Bkt};
 
