@@ -9,15 +9,15 @@ mod cli {
 
     // Bash scripts to pass to -c.
     // Avoid depending on external programs.
-    const COUNT_INVOCATIONS: &str = "file=${1:?} lines=0; \
-                                 printf '%s' '.' >> \"$file\"; \
-                                 read < \"$file\"; \
-                                 printf '%s' \"${#REPLY}\";";
-    const PRINT_ARGS: &str = "args=(\"$@\"); declare -p args;";
-    const EXIT_WITH: &str = "exit \"${1:?}\";";
-    const AWAIT_AND_TOUCH: &str = "echo awaiting; \
-                               until [[ -e \"${1:?}\" ]]; do sleep .1; done; \
-                               echo > \"${2:?}\";";
+    const COUNT_INVOCATIONS: &str = r#"file=${1:?} lines=0; \
+                                       printf '%s' '.' >> "$file"; \
+                                       read < "$file"; \
+                                       printf '%s' "${#REPLY}";"#;
+    const PRINT_ARGS: &str = r#"args=("$@"); declare -p args;"#;
+    const EXIT_WITH: &str = r#"exit "${1:?}";"#;
+    const AWAIT_AND_TOUCH: &str = r#"echo awaiting; \
+                                     until [[ -e "${1:?}" ]]; do sleep .1; done; \
+                                     echo > "${2:?}";"#;
 
     fn bkt<P: AsRef<Path>>(cache_dir: P) -> Command {
         let test_exe = std::env::current_exe().expect("Could not resolve test location");
@@ -82,9 +82,8 @@ mod cli {
         Ok(())
     }
 
-    fn join<A: Clone>(mut vec: Vec<A>, tail: &[A]) -> Vec<A> {
-        vec.extend_from_slice(tail);
-        vec
+    fn join<A: Clone>(beg: &[A], tail: &[A]) -> Vec<A> {
+        beg.iter().chain(tail).cloned().collect()
     }
 
     #[test]
@@ -98,11 +97,11 @@ mod cli {
     fn cached() {
         let dir = TestDir::temp();
         let file = dir.path("file");
-        let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
-        let first_result = run(bkt(dir.path("cache")).args(&args));
+        let args = ["--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
+        let first_result = run(bkt(dir.path("cache")).args(args));
 
         for _ in 1..3 {
-            let subsequent_result = run(bkt(dir.path("cache")).args(&args));
+            let subsequent_result = run(bkt(dir.path("cache")).args(args));
             assert_eq!(first_result, subsequent_result);
         }
     }
@@ -111,15 +110,15 @@ mod cli {
     fn cache_expires() {
         let dir = TestDir::temp();
         let file = dir.path("file");
-        let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
-        let first_result = succeed(bkt(dir.path("cache")).args(&args));
+        let args = ["--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
+        let first_result = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(first_result, "1");
 
-        let subsequent_result = succeed(bkt(dir.path("cache")).args(&args));
+        let subsequent_result = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(first_result, subsequent_result);
 
         make_dir_stale(dir.path("cache"), Duration::from_secs(120)).unwrap();
-        let after_stale_result = succeed(bkt(dir.path("cache")).args(&args));
+        let after_stale_result = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(after_stale_result, "2");
     }
 
@@ -128,54 +127,54 @@ mod cli {
         let dir = TestDir::temp();
         let file1 = dir.path("file1");
         let file2 = dir.path("file2");
-        let args1 = vec!("--ttl=10s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file1.to_str().unwrap());
-        let args2 = vec!("--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file2.to_str().unwrap());
+        let args1 = ["--ttl=10s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file1.to_str().unwrap()];
+        let args2 = ["--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file2.to_str().unwrap()];
 
         // first invocation
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args1)), "1");
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args2)), "1");
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args1)), "1");
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args2)), "1");
 
         // second invocation, cached
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args1)), "1");
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args2)), "1");
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args1)), "1");
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args2)), "1");
 
         // only shorter TTL is invalidated
         make_dir_stale(dir.path("cache"), Duration::from_secs(15)).unwrap();
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args1)), "2");
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args2)), "1");
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args1)), "2");
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args2)), "1");
     }
 
     #[test]
     fn cache_hits_with_different_settings() {
         let dir = TestDir::temp();
         let file = dir.path("file");
-        let args1 = vec!("--ttl=10s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
-        let args2 = vec!("--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
+        let args1 = ["--ttl=10s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
+        let args2 = ["--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
 
         // despite different TTLs the invocation is still cached
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args1)), "1");
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args2)), "1");
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args1)), "1");
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args2)), "1");
 
         // the provided TTL is respected, though it was cached with a smaller TTL
         make_dir_stale(dir.path("cache"), Duration::from_secs(15)).unwrap();
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args2)), "1");
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args2)), "1");
 
         // However the cache can be invalidated in the background using the older TTL
         make_dir_stale(dir.path("cache"), Duration::from_secs(60)).unwrap(); // ensure the following call triggers a cleanup
-        succeed(bkt(dir.path("cache")).args(&["--", "bash", "-c", "sleep 1"])); // trigger cleanup via a different command
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args1)), "2");
+        succeed(bkt(dir.path("cache")).args(["--", "bash", "-c", "sleep 1"])); // trigger cleanup via a different command
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args1)), "2");
     }
 
     #[test]
     fn cache_refreshes_in_background() {
         let dir = TestDir::temp();
         let file = dir.path("file");
-        let args = vec!("--stale=10s", "--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args)), "1");
+        let args = ["--stale=10s", "--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "1");
 
         let last_mod = modtime(&file);
         make_dir_stale(dir.path("cache"), Duration::from_secs(15)).unwrap();
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args)), "1");
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "1");
 
         for _ in 1..10 {
             if modtime(&file) > last_mod { break; }
@@ -183,7 +182,7 @@ mod cli {
         }
         assert!(modtime(&file) > last_mod);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "..");
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args)), "2");
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "2");
     }
 
     #[test]
@@ -191,12 +190,12 @@ mod cli {
         let dir = TestDir::temp();
         let file = dir.path("file");
         let cmd = format!("{} false;", COUNT_INVOCATIONS);
-        let args = vec!("--discard-failures", "--", "bash", "-c", &cmd, "arg0", file.to_str().unwrap());
+        let args = ["--discard-failures", "--", "bash", "-c", &cmd, "arg0", file.to_str().unwrap()];
 
-        assert_eq!(run(bkt(dir.path("cache")).args(&args)),
+        assert_eq!(run(bkt(dir.path("cache")).args(args)),
                    CmdResult { out: "1".into(), err: "".into(), status: Some(1) });
         // Not cached
-        assert_eq!(run(bkt(dir.path("cache")).args(&args)),
+        assert_eq!(run(bkt(dir.path("cache")).args(args)),
                    CmdResult { out: "2".into(), err: "".into(), status: Some(1) });
     }
 
@@ -205,12 +204,12 @@ mod cli {
         let dir = TestDir::temp();
         let file = dir.path("file");
         let cmd = format!("{} false;", COUNT_INVOCATIONS);
-        let args = vec!("--ttl=20s", "--", "bash", "-c", &cmd, "arg0", file.to_str().unwrap());
-        let discard_args = join(vec!("--discard-failures"), &args);
-        let discard_stale_args = join(vec!("--stale=10s"), &discard_args);
+        let args = ["--ttl=20s", "--", "bash", "-c", &cmd, "arg0", file.to_str().unwrap()];
+        let discard_args = join(&["--discard-failures"], &args);
+        let discard_stale_args = join(&["--stale=10s"], &discard_args);
 
         // cached
-        assert_eq!(run(bkt(dir.path("cache")).args(&args)),
+        assert_eq!(run(bkt(dir.path("cache")).args(args)),
                    CmdResult { out: "1".into(), err: "".into(), status: Some(1) });
 
         // returns cached result, but attempts to warm in the background
@@ -241,13 +240,13 @@ mod cli {
     fn respects_cache_dir() {
         let dir = TestDir::temp();
         let file = dir.path("file");
-        let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
+        let args = ["--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
 
-        let first_call = succeed(bkt(dir.path("cache")).arg(format!("--cache-dir={}", dir.path("cache").display())).args(&args));
+        let first_call = succeed(bkt(dir.path("cache")).arg(format!("--cache-dir={}", dir.path("cache").display())).args(args));
         assert_eq!(first_call, "1");
-        assert_eq!(first_call, succeed(bkt(dir.path("cache")).arg(format!("--cache-dir={}", dir.path("cache").display())).args(&args)));
+        assert_eq!(first_call, succeed(bkt(dir.path("cache")).arg(format!("--cache-dir={}", dir.path("cache").display())).args(args)));
 
-        let diff_cache = succeed(bkt(dir.path("cache")).arg(format!("--cache-dir={}", dir.path("new-cache").display())).args(&args));
+        let diff_cache = succeed(bkt(dir.path("cache")).arg(format!("--cache-dir={}", dir.path("new-cache").display())).args(args));
         assert_eq!(diff_cache, "2");
     }
 
@@ -255,33 +254,33 @@ mod cli {
     fn respects_cache_scope() {
         let dir = TestDir::temp();
         let file = dir.path("file");
-        let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
+        let args = ["--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
 
-        let first_call = succeed(bkt(dir.path("cache")).args(&args));
+        let first_call = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(first_call, "1");
-        assert_eq!(first_call, succeed(bkt(dir.path("cache")).args(&args)));
+        assert_eq!(first_call, succeed(bkt(dir.path("cache")).args(args)));
 
         let diff_scope = succeed(bkt(dir.path("cache"))
-            .arg("--scope=foo").args(&args));
+            .arg("--scope=foo").args(args));
         assert_eq!(diff_scope, "2");
         assert_eq!(diff_scope, succeed(bkt(dir.path("cache"))
-            .arg("--scope=foo").args(&args)));
+            .arg("--scope=foo").args(args)));
     }
 
     #[test]
     fn respects_args() {
         let dir = TestDir::temp();
         let file = dir.path("file");
-        let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
+        let args = ["--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
 
-        let first_call = succeed(bkt(dir.path("cache")).args(&args));
+        let first_call = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(first_call, "1");
-        assert_eq!(first_call, succeed(bkt(dir.path("cache")).args(&args)));
+        assert_eq!(first_call, succeed(bkt(dir.path("cache")).args(args)));
 
-        let diff_args = succeed(bkt(dir.path("cache")).args(&args).arg("A B"));
+        let diff_args = succeed(bkt(dir.path("cache")).args(args).arg("A B"));
         assert_eq!(diff_args, "2");
 
-        let split_args = succeed(bkt(dir.path("cache")).args(&args).args(vec! {"A", "B"}));
+        let split_args = succeed(bkt(dir.path("cache")).args(args).args(["A", "B"]));
         assert_eq!(split_args, "3");
     }
 
@@ -290,11 +289,11 @@ mod cli {
         let dir = TestDir::temp()
             .create("dir1", FileType::Dir)
             .create("dir2", FileType::Dir);
-        let args = vec!("--", "bash", "-c", "pwd");
-        let cwd_args = join(vec!("--cwd"), &args);
+        let args = ["--", "bash", "-c", "pwd"];
+        let cwd_args = join(&["--cwd"], &args);
 
-        let without_cwd_dir1 = succeed(bkt(dir.path("cache")).args(&args).current_dir(dir.path("dir1")));
-        let without_cwd_dir2 = succeed(bkt(dir.path("cache")).args(&args).current_dir(dir.path("dir2")));
+        let without_cwd_dir1 = succeed(bkt(dir.path("cache")).args(args).current_dir(dir.path("dir1")));
+        let without_cwd_dir2 = succeed(bkt(dir.path("cache")).args(args).current_dir(dir.path("dir2")));
         assert!(without_cwd_dir1.trim().ends_with("/dir1"));
         assert!(without_cwd_dir2.trim().ends_with("/dir1")); // incorrect! cached too eagerly
 
@@ -308,12 +307,12 @@ mod cli {
     #[cfg(not(feature = "debug"))] // See lib's bkt_tests::with_env
     fn respects_env() {
         let dir = TestDir::temp();
-        let args = vec!("--", "bash", "-c", "printf 'foo:%s bar:%s baz:%s' \"$FOO\" \"$BAR\" \"$BAZ\"");
-        let env_args = join(vec!("--env=FOO", "--env=BAR"), &args);
+        let args = ["--", "bash", "-c", r#"printf 'foo:%s bar:%s baz:%s' "$FOO" "$BAR" "$BAZ""#];
+        let env_args = join(&["--env=FOO", "--env=BAR"], &args);
 
-        let without_env = succeed(bkt(dir.path("cache")).args(&args)
+        let without_env = succeed(bkt(dir.path("cache")).args(args)
             .env("FOO", "1").env("BAR", "1").env("BAZ", "1"));
-        assert_eq!(without_env, succeed(bkt(dir.path("cache")).args(&args)));
+        assert_eq!(without_env, succeed(bkt(dir.path("cache")).args(args)));
         // even if --env is set, if the vars are absent cache still hits earlier call
         assert_eq!(without_env, succeed(bkt(dir.path("cache")).args(&env_args)));
 
@@ -334,13 +333,13 @@ mod cli {
     #[test]
     fn no_debug_output() {
         let dir = TestDir::temp();
-        let args = vec!("--", "bash", "-c", "true");
+        let args = ["--", "bash", "-c", "true"];
 
         // Not cached
-        assert_eq!(run(bkt(dir.path("cache")).args(&args)),
+        assert_eq!(run(bkt(dir.path("cache")).args(args)),
                    CmdResult { out: "".into(), err: "".into(), status: Some(0) });
         // Cached
-        assert_eq!(run(bkt(dir.path("cache")).args(&args)),
+        assert_eq!(run(bkt(dir.path("cache")).args(args)),
                    CmdResult { out: "".into(), err: "".into(), status: Some(0) });
     }
 
@@ -348,11 +347,11 @@ mod cli {
     fn output_preserved() {
         let dir = TestDir::temp();
         fn same_output(dir: &TestDir, args: &[&str]) {
-            let bkt_args = vec!("--", "bash", "-c", PRINT_ARGS, "arg0");
+            let bkt_args = ["--", "bash", "-c", PRINT_ARGS, "arg0"];
             // Second call will be cached
             assert_eq!(
-                succeed(bkt(dir.path("cache")).args(&bkt_args).args(args)),
-                succeed(bkt(dir.path("cache")).args(&bkt_args).args(args)));
+                succeed(bkt(dir.path("cache")).args(bkt_args).args(args)),
+                succeed(bkt(dir.path("cache")).args(bkt_args).args(args)));
         }
 
         same_output(&dir, &[]);
@@ -365,23 +364,23 @@ mod cli {
     #[test]
     fn sensitive_output() {
         let dir = TestDir::temp();
-        let args = vec!("--", "bash", "-c", "printf 'foo\\0bar'; printf 'bar\\0baz\\n' >&2");
+        let args = ["--", "bash", "-c", r"printf 'foo\0bar'; printf 'bar\0baz\n' >&2"];
 
         // Not cached
-        let output = run(bkt(dir.path("cache")).args(&args));
+        let output = run(bkt(dir.path("cache")).args(args));
         assert_eq!(output,
                    CmdResult { out: "foo\u{0}bar".into(), err: "bar\u{0}baz\n".into(), status: Some(0) });
         // Cached
-        assert_eq!(run(bkt(dir.path("cache")).args(&args)), output);
+        assert_eq!(run(bkt(dir.path("cache")).args(args)), output);
     }
 
     #[test]
     fn exit_code_preserved() {
         let dir = TestDir::temp();
-        let args = vec!("--", "bash", "-c", EXIT_WITH, "arg0");
+        let args = ["--", "bash", "-c", EXIT_WITH, "arg0"];
 
-        assert_eq!(run(bkt(dir.path("cache")).args(&args).arg("14")).status, Some(14));
-        assert_eq!(run(bkt(dir.path("cache")).args(&args).arg("14")).status, Some(14));
+        assert_eq!(run(bkt(dir.path("cache")).args(args).arg("14")).status, Some(14));
+        assert_eq!(run(bkt(dir.path("cache")).args(args).arg("14")).status, Some(14));
     }
 
     #[test]
@@ -389,11 +388,11 @@ mod cli {
         let dir = TestDir::temp();
         let await_file = dir.path("await");
         let touch_file = dir.path("touch");
-        let args = vec!("--", "bash", "-c", AWAIT_AND_TOUCH, "arg0",
-                        await_file.to_str().unwrap(), touch_file.to_str().unwrap());
-        let warm_args = join(vec!("--warm"), &args);
+        let args = ["--", "bash", "-c", AWAIT_AND_TOUCH, "arg0",
+                    await_file.to_str().unwrap(), touch_file.to_str().unwrap()];
+        let warm_args = join(&["--warm"], &args);
 
-        let output = succeed(bkt(dir.path("cache")).args(&warm_args));
+        let output = succeed(bkt(dir.path("cache")).args(warm_args));
         assert_eq!(output, "");
         assert!(!touch_file.exists());
 
@@ -408,7 +407,7 @@ mod cli {
         assert!(touch_file.exists());
 
         std::fs::remove_file(&await_file).unwrap(); // process would not terminate if run again
-        let output = succeed(bkt(dir.path("cache")).args(&args));
+        let output = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(output, "awaiting\n");
     }
 
@@ -416,17 +415,17 @@ mod cli {
     fn force() {
         let dir = TestDir::temp();
         let file = dir.path("file");
-        let args = vec!("--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap());
-        let args_force = join(vec!("--force"), &args);
+        let args = ["--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
+        let args_force = join(&["--force"], &args);
 
-        let output = succeed(bkt(dir.path("cache")).args(&args));
+        let output = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(output, "1");
-        let output = succeed(bkt(dir.path("cache")).args(&args));
+        let output = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(output, "1");
 
-        let output = succeed(bkt(dir.path("cache")).args(&args_force));
+        let output = succeed(bkt(dir.path("cache")).args(args_force));
         assert_eq!(output, "2");
-        let output = succeed(bkt(dir.path("cache")).args(&args));
+        let output = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(output, "2");
     }
 
@@ -434,12 +433,12 @@ mod cli {
     fn concurrent_call_race() {
         let dir = TestDir::temp();
         let file = dir.path("file");
-        let slow_count_invocations = format!("sleep \"0.5$RANDOM\"; {}", COUNT_INVOCATIONS);
-        let args = vec!("--", "bash", "-c", &slow_count_invocations, "arg0", file.to_str().unwrap());
+        let slow_count_invocations = format!(r#"sleep "0.5$RANDOM"; {}"#, COUNT_INVOCATIONS);
+        let args = ["--", "bash", "-c", &slow_count_invocations, "arg0", file.to_str().unwrap()];
         println!("{:?}", args);
 
-        let proc1 = bkt(dir.path("cache")).args(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-        let proc2 = bkt(dir.path("cache")).args(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let proc1 = bkt(dir.path("cache")).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let proc2 = bkt(dir.path("cache")).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let result1: CmdResult = proc1.wait_with_output().unwrap().into();
         assert_eq!(result1.err, "");
         assert_eq!(result1.status, Some(0));
