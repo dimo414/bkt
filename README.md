@@ -172,6 +172,9 @@ your `TMPDIR` to a location only you can access.
 
 ## Patterns and Tips
 
+**Please share how you're using `bkt` on the
+[Discussion Board](https://github.com/dimo414/bkt/discussions/categories/show-and-tell)!**
+
 <a name="fzf"></a>
 ### Speeding up `fzf` and other preview tools
 
