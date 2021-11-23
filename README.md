@@ -1,5 +1,12 @@
 # `bkt`
 
+[![github](https://img.shields.io/badge/github-dimo414/bkt-green?logo=github)](https://github.com/dimo414/bkt)
+[![crates.io](https://img.shields.io/crates/v/bkt?logo=rust)](https://crates.io/crates/bkt)
+[![build status](https://img.shields.io/github/workflow/status/dimo414/bkt/Rust/master)](https://github.com/dimo414/bkt/actions)
+[![docs.rs](https://img.shields.io/docsrs/bkt)](https://docs.rs/bkt)
+[![issues](https://img.shields.io/github/issues/dimo414/bkt)](https://github.com/dimo414/bkt/issues)
+[![license](https://img.shields.io/github/license/dimo414/bkt)](https://github.com/dimo414/bkt/blob/master/LICENSE)
+
 `bkt` (pronounced "bucket") is a subprocess caching utility written in Rust,
 inspired by [bash-cache](https://github.com/dimo414/bash-cache).
 Wrapping expensive process invocations with `bkt` allows callers to reuse recent
@@ -25,7 +32,7 @@ additional platforms.
 ## Usage
 
 ```
-bkt [--ttl=DURATION] [--stale=DURATION] [--cwd] [--env= ...] [--scope=SCOPE] [--warm|--force] -- <command>...
+bkt [--ttl=DURATION] [--stale=DURATION] [--cwd] [--env=ENV ...] [--scope=SCOPE] [--discard-failures] [--warm|--force] -- <command>...
 ```
 
 The easiest way to use `bkt` is to simply prefix the command you intend to
