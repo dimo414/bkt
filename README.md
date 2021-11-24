@@ -1,9 +1,9 @@
 # `bkt`
 
-[![github](https://img.shields.io/badge/github-dimo414/bkt-green?logo=github)](https://github.com/dimo414/bkt)
+[![releases](https://img.shields.io/github/v/release/dimo414/bkt?sort=semver&logo=github)](https://github.com/dimo414/bkt/releases)
 [![crates.io](https://img.shields.io/crates/v/bkt?logo=rust)](https://crates.io/crates/bkt)
+[![docs.rs](https://img.shields.io/docsrs/bkt?label=docs.rs)](https://docs.rs/bkt)
 [![build status](https://img.shields.io/github/workflow/status/dimo414/bkt/Rust/master)](https://github.com/dimo414/bkt/actions)
-[![docs.rs](https://img.shields.io/docsrs/bkt)](https://docs.rs/bkt)
 [![issues](https://img.shields.io/github/issues/dimo414/bkt)](https://github.com/dimo414/bkt/issues)
 [![license](https://img.shields.io/github/license/dimo414/bkt)](https://github.com/dimo414/bkt/blob/master/LICENSE)
 
