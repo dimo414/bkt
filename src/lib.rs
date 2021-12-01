@@ -491,17 +491,20 @@ impl Cache {
         let ttl_dir = self.data_dir().join(Cache::seconds_ceiling(ttl).to_string());
         std::fs::create_dir_all(&ttl_dir)?;
         std::fs::create_dir_all(&self.key_dir())?;
-        let path = Cache::rand_filename(&ttl_dir, "data");
+        let data_path = Cache::rand_filename(&ttl_dir, "data");
         // Note: this will fail if filename collides, could retry in a loop if that happens
-        let file = OpenOptions::new().create_new(true).write(true).open(&path)?;
+        let file = OpenOptions::new().create_new(true).write(true).open(&data_path)?;
         let entry = CacheEntry{ key, value };
         Cache::serialize(BufWriter::new(&file), &entry).context("Serialization failed")?;
-        debug_msg!("store data {}", path.display());
+        debug_msg!("store data {}", data_path.display());
+        // The target needs to be canonicalized as we're creating the link in a subdirectory, but I'd somewhat prefer
+        // to fix it to be correctly relative to the link's location. Probably not worth the trouble though.
+        let data_path = data_path.canonicalize()?;
         // Roundabout approach to an atomic symlink replacement
         // https://github.com/dimo414/bash-cache/issues/26
         let tmp_symlink = Cache::rand_filename(&self.key_dir(), "tmp-symlink");
-        // Note: this will fail if filename collides, could retry in a loop if that happens
-        symlink(&path, &tmp_symlink)?;
+        // Note: this call will fail if the tmp_symlink filename collides, could retry in a loop if that happens.
+        symlink(&data_path, &tmp_symlink)?;
         let key_path = self.key_path(&entry.key.cache_key());
         std::fs::rename(&tmp_symlink, &key_path)?;
         debug_msg!("store key {}", key_path.display());

@@ -250,6 +250,20 @@ mod cli {
         assert_eq!(diff_cache, "2");
     }
 
+    // https://github.com/dimo414/bkt/issues/9
+    #[test]
+    fn respects_relative_cache() {
+        let dir = TestDir::temp();
+        let cwd = dir.path("cwd");
+        std::fs::create_dir(&cwd).unwrap();
+        let file = dir.path("file");
+        let args = ["--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
+
+        let first_call = succeed(bkt(dir.path("unused")).arg("--cache-dir=cache").args(args).current_dir(&cwd));
+        assert_eq!(first_call, "1");
+        assert_eq!(first_call, succeed(bkt(dir.path("unused")).arg("--cache-dir=cache").args(args).current_dir(&cwd)));
+    }
+
     #[test]
     fn respects_cache_scope() {
         let dir = TestDir::temp();
