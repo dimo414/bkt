@@ -738,7 +738,8 @@ impl Bkt {
         // TODO use separate directories per user, like bash-cache
         //      See https://stackoverflow.com/q/57951893/113632
         let cache_dir = root_dir
-            .join(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")));
+            .join(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")))
+            .canonicalize()?;
         Bkt::restrict_dir(&cache_dir)?;
         Ok(Bkt {
             cache: Cache::new(&cache_dir),
