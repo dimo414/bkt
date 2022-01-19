@@ -29,6 +29,11 @@ Pre-compiled binaries for common platforms are attached to each
 open an issue or send a PR if you would like releases to include binaries for
 additional platforms.
 
+Package manager support is being tracked
+[here](https://github.com/dimo414/bkt/issues/12); volunteers are welcome.
+
+[![Packaging status](https://repology.org/badge/vertical-allrepos/bkt.svg)](https://repology.org/project/bkt/versions)
+
 ## Usage
 
 ```
