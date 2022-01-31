@@ -90,7 +90,7 @@ mod cli {
     fn help() {
         let dir = TestDir::temp();
         let out = succeed(bkt(dir.path("cache")).arg("--help"));
-        assert!(out.contains("bkt [FLAGS] [OPTIONS] [--] <command>..."));
+        assert!(out.contains("bkt [OPTIONS] [--] <COMMAND>..."));
     }
 
     #[test]
