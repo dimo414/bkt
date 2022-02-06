@@ -78,8 +78,8 @@ syntax is defined in the
 
 ### Execution Environment
 
-Some commands behavior depends on more than just the command line arguments.
-It's possible to constrain the cache so these invocations are not conflated.
+Some commands' behavior depends on more than just the command line arguments.
+It's possible to constrain the cache so that these invocations are not conflated.
 For example, attempting to cache `pwd` will not work as expected by default:
 
 ```shell

@@ -80,8 +80,23 @@ fn run(cli: Cli) -> Result<i32> {
         }
     }
 
-    io::stdout().write_all(invocation.stdout()).unwrap();
-    io::stderr().write_all(invocation.stderr()).unwrap();
+    // BrokenPipe errors are uninteresting for command line applications; just stop writing to that
+    // descriptor and, if appropriate, exit. Rust doesn't have good support for this presently, see
+    // https://github.com/rust-lang/rust/issues/46016
+    fn disregard_broken_pipe(result: std::io::Result<()>) -> std::io::Result<()> {
+        use std::io::ErrorKind::*;
+        if let Err(e) = &result {
+            if let BrokenPipe = e.kind() {
+                return Ok(());
+            }
+        }
+        result
+    }
+
+    disregard_broken_pipe(io::stdout().write_all(invocation.stdout()))
+        .context("error writing to stdout")?;
+    disregard_broken_pipe(io::stderr().write_all(invocation.stderr()))
+        .context("error writing to stderr")?;
     Ok(invocation.exit_code())
 }
 
