@@ -199,6 +199,7 @@ mod cli {
                    CmdResult { out: "2".into(), err: "".into(), status: Some(1) });
     }
 
+    // Note: this test has been flaky in the past
     #[test]
     fn discard_failures_in_background() {
         let dir = TestDir::temp();
@@ -217,11 +218,6 @@ mod cli {
         make_dir_stale(dir.path("cache"), Duration::from_secs(15)).unwrap();
         assert_eq!(run(bkt(dir.path("cache")).args(&discard_stale_args)),
                    CmdResult { out: "1".into(), err: "".into(), status: Some(1) });
-        // TODO this third call shouldn't be necessary, but for some reason the modtime assertion
-        //     below fails occasionally even though the file contents check below that indicates the
-        //     write happened. Other tests don't appear to trigger this race.
-        assert_eq!(run(bkt(dir.path("cache")).args(&discard_stale_args)),
-                   CmdResult { out: "1".into(), err: "".into(), status: Some(1) });
 
         for _ in 1..10 {
             if modtime(&file) > last_mod { break; }
@@ -229,7 +225,7 @@ mod cli {
         }
         // Command ran
         assert!(modtime(&file) > last_mod, "{:?} !> {:?}", modtime(&file), last_mod);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "...");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "..");
 
         // but cache was not updated
         assert_eq!(run(bkt(dir.path("cache")).args(&discard_args)),
