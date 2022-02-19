@@ -201,7 +201,7 @@ $ printf '%s\n' 1 0.2 3 0.1 5 | \
   fzf --preview="bash -c 'sleep {}; echo {}'"
 
 $ printf '%s\n' 1 0.2 3 0.1 5 | \
-  fzf --ttl=10m --stale=10s --preview="bkt -- bash -c 'sleep {}; echo {}'"
+  fzf --preview="bkt --ttl=10m --stale=10s -- bash -c 'sleep {}; echo {}'"
 ```
 
 You'll generally want to use a long TTL and a short stale duration so that
