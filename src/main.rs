@@ -109,11 +109,11 @@ struct Cli {
     command: Vec<OsString>,
 
     /// Duration the cached result will be valid for
-    #[clap(long, default_value = "60s", visible_alias = "time-to-live")]
+    #[clap(long, default_value = "60s", visible_alias = "time-to-live", env = "BKT_TTL")]
     ttl: humantime::Duration,
 
     /// Duration after which the result will be asynchronously refreshed
-    #[clap(long, conflicts_with = "warm")]
+    #[clap(long, conflicts_with = "warm", env = "BKT_STALE")]
     stale: Option<humantime::Duration>,
 
     /// Asynchronously execute and cache the given command, even if it's already cached
@@ -142,14 +142,14 @@ struct Cli {
 
     /// If set, all cached data will be scoped to this value,
     /// preventing collisions with commands cached with different scopes
-    #[clap(long)]
+    #[clap(long, env = "BKT_SCOPE")]
     scope: Option<String>,
 
     /// The directory under which to persist cached invocations;
     /// defaults to the system's temp directory.
     /// Setting this to a directory backed by RAM or an SSD, such as a tmpfs partition,
     /// will significantly reduce caching overhead.
-    #[clap(long)]
+    #[clap(long, env = "BKT_CACHE_DIR")]
     cache_dir: Option<PathBuf>,
 }
 

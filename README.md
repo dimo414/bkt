@@ -169,6 +169,13 @@ Note that the choice of directory can affect `bkt`'s performance: if the cache
 is stored under a [`tmpfs`](https://en.wikipedia.org/wiki/Tmpfs) or solid-state
 partition it will be significantly faster than caching to a spinning disk.
 
+### Environment Variables
+
+Some settings can be passed via those environment variables:
+
+`BKT_SCOPE`, `BKT_CACHE_DIR`, `BKT_TTL`, and `BKT_STALE`.
+
+
 ## Security and Privacy
 
 The default cache directory is potentially world-readable. On Unix the cache
