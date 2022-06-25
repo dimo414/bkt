@@ -199,8 +199,8 @@ mod cli {
                    CmdResult { out: "2".into(), err: "".into(), status: Some(1) });
     }
 
-    // Note: this test has been flaky in the past
     #[test]
+    #[ignore] // TODO(https://github.com/dimo414/bkt/issues/14)
     fn discard_failures_in_background() {
         let dir = TestDir::temp();
         let file = dir.path("file");
