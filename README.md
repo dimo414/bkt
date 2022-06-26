@@ -174,7 +174,7 @@ partition it will be significantly faster than caching to a spinning disk.
 Some settings can be passed via the following environment variables:
 
 - `BKT_SCOPE` for [`--scope`](#setting-a-cache-scope)
-- `BKT_CACHE_DIR` for [`--cache-dir`](#changing-the-cache-directory)
+- `BKT_TMPDIR` for [`--cache-dir`](#changing-the-cache-directory)
 - `BKT_TTL` for [`--ttl`](#cache-lifespan)
 - `BKT_STALE` for [`--stale`](#cache-lifespan)
 

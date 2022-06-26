@@ -149,7 +149,7 @@ struct Cli {
     /// defaults to the system's temp directory.
     /// Setting this to a directory backed by RAM or an SSD, such as a tmpfs partition,
     /// will significantly reduce caching overhead.
-    #[clap(long, env = "BKT_CACHE_DIR")]
+    #[clap(long, env = "BKT_TMPDIR")]
     cache_dir: Option<PathBuf>,
 }
 
