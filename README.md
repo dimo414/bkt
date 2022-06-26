@@ -155,7 +155,7 @@ frequently than the `--ttl` would suggest, which in turn can create unexpected
 load. If the backing command is failing due to an outage or bug (such as an
 overloaded website) triggering additional calls can exacerbate the issue and
 effectively DDoS the hampered system. It is generally safer *not* to set this
-flag and instead make the client robust to occasional failures. 
+flag and instead make the client robust to occasional failures.
 
 <a name="cache_dir"></a>
 ### Changing the Cache Directory
