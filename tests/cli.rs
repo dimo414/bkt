@@ -114,12 +114,19 @@ mod cli {
         let first_result = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(first_result, "1");
 
+        // Slightly stale is still cached
+        make_dir_stale(dir.path("cache"), Duration::from_secs(10)).unwrap();
         let subsequent_result = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(first_result, subsequent_result);
 
         make_dir_stale(dir.path("cache"), Duration::from_secs(120)).unwrap();
         let after_stale_result = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(after_stale_result, "2");
+
+        // Respects BKT_TTL env var (other tests cover --ttl)
+        make_dir_stale(dir.path("cache"), Duration::from_secs(10)).unwrap();
+        let env_result = succeed(bkt(dir.path("cache")).env("BKT_TTL", "5s").args(args));
+        assert_eq!(env_result, "3");
     }
 
     #[test]
@@ -244,6 +251,9 @@ mod cli {
 
         let diff_cache = succeed(bkt(dir.path("cache")).arg(format!("--cache-dir={}", dir.path("new-cache").display())).args(args));
         assert_eq!(diff_cache, "2");
+
+        let env_cache = succeed(bkt(dir.path("cache")).env("BKT_CACHE_DIR", dir.path("env-cache").as_os_str()).args(args));
+        assert_eq!(env_cache, "3");
     }
 
     // https://github.com/dimo414/bkt/issues/9
@@ -275,6 +285,8 @@ mod cli {
         assert_eq!(diff_scope, "2");
         assert_eq!(diff_scope, succeed(bkt(dir.path("cache"))
             .arg("--scope=foo").args(args)));
+        assert_eq!(diff_scope, succeed(bkt(dir.path("cache"))
+            .env("BKT_SCOPE", "foo").args(args)));
     }
 
     #[test]

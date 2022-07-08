@@ -64,7 +64,8 @@ Two flags, `--ttl` and `--stale`, configure how long cached data is preserved.
 By default `bkt` uses a TTL (Time to Live) of 60 seconds, meaning cached
 data older than sixty seconds will be discarded and the backing command re-run.
 Passing a different value, such as `--ttl=1d`, will change how long the cached
-data is considered valid.
+data is considered valid. The default TTL can be overriden by defining a
+`BKT_TTL` environment variable.
 
 When the data expires `bkt` has to re-execute the command synchronously, which
 can introduce unexpected slowness. To avoid this, pass `--stale` with a shorter
@@ -72,9 +73,10 @@ duration than the TTL. This causes `bkt` to refresh the cache in the background
 when the cached data is older than the stale threshold while still returning
 the old data promptly.
 
-Both flags accept duration strings such as `10s` or `1hour 30min`. The exact
-syntax is defined in the
-[humantime](https://docs.rs/humantime/2.1.0/humantime/fn.parse_duration.html) library.
+Both flags (and `BKT_TTL`) accept duration strings such as `10s` or
+`1hour 30min`. The exact syntax is defined in the
+[humantime](https://docs.rs/humantime/2.1.0/humantime/fn.parse_duration.html)
+library.
 
 ### Execution Environment
 
@@ -144,6 +146,17 @@ $ bkt --scope=foo -- date +%s.%N
 1631992418.010562000
 ```
 
+Alternatively, define a `BKT_SCOPE` environment variable to configure a
+consistent scope across invocations. This can be useful within a script to
+ensure all commands share a scope.
+
+```shell
+#!/bin/bash
+
+# Set a unique scope for this script invocation using the PID and current time
+export BKT_SCOPE="my_script_$$_$(date -Ins)"
+```
+
 ### Discarding Failed Invocations
 
 By default, all invocations are cached regardless of their output or exit code.
@@ -161,9 +174,15 @@ flag and instead make the client robust to occasional failures.
 ### Changing the Cache Directory
 
 By default, cached data is stored under `/tmp` or a similar temporary directory;
-this can be customized via the `--cache-dir` flag, or by setting the
-`BKT_TMPDIR` environment variable. If both `BKT_TMPDIR` and `--cache-dir` are
-used the flag `--cache-dir` will take priority.
+this can be customized via the `--cache-dir` flag or by defining a
+`BKT_CACHE_DIR` environment variable.
+
+If a `BKT_TMPDIR` environment variable is defined it wil be used instead of the
+system's temporary directory. Although `BKT_TMPDIR` and `BKT_CACHE_DIR` have
+similar effects `BKT_TMPDIR` is intended to be used to configure the global
+cache location (e.g. by declaring it in your `.bashrc` or similar), while
+`--cache-dir`/`BKT_CACHE_DIR` should be used to customize the cache location
+for a given set of invocations that shouldn't use the default cache directory.
 
 Note that the choice of directory can affect `bkt`'s performance: if the cache
 is stored under a [`tmpfs`](https://en.wikipedia.org/wiki/Tmpfs) or solid-state
@@ -180,7 +199,8 @@ you trust such as `~/.bkt`, but note that your home directory may be slower than
 the temporary directory selected by default.
 
 In general, if you are not the only user of your system it's wise to configure
-your `TMPDIR` to a location only you can access.
+your `TMPDIR` to a location only you can access. If that is not possible use
+`BKT_TMPDIR` to configure a custom temporary directory specifically for `bkt`.
 
 ## Patterns and Tips
 
