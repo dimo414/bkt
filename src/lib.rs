@@ -380,7 +380,7 @@ use std::os::unix::fs::symlink;
 
 /// A file-system-backed cache for mapping keys (i.e. `CommandDesc`) to values (i.e. `Invocation`)
 /// for a given duration.
-// TODO make this a trait so we can swap out impls, namely an in-memory impl
+// TODO make this a trait so we can swap out impls, such as an in-memory cache or SQLite-backed
 #[derive(Clone, Debug)]
 struct Cache {
     cache_dir: PathBuf,
@@ -485,9 +485,17 @@ impl Cache {
     }
 
     /// Write the given key/value pair to the cache, persisting it for at least the given TTL.
+    ///
+    /// Note: This method takes references to the key and value because they are serialized
+    /// externally, therefore consuming either parameter is unhelpful. An in-memory implementation
+    /// would need to do an internal .clone() which is at odds with C-CALLER-CONTROL
+    /// (https://rust-lang.github.io/api-guidelines/flexibility.html) but Cache is intended for
+    /// serialization use cases so some overhead in the in-memory case may be acceptable.
+    // TODO C-INTERMEDIATE suggests emulating HashMap::insert and returning any existing value in
+    //     the cache, though it would be expensive to construct this so perhaps should be a callback
     fn store<K, V>(&self, key: &K, value: &V, ttl: Duration) -> Result<()>
             where K: CacheKey+Serialize, V: Serialize {
-        assert!(!ttl.as_secs() > 0 || ttl.subsec_nanos() > 0, "ttl cannot be zero"); // TODO use is_zero once stable
+        assert!(!ttl.is_zero(), "ttl cannot be zero");
         let ttl_dir = self.data_dir().join(Cache::seconds_ceiling(ttl).to_string());
         std::fs::create_dir_all(&ttl_dir)?;
         std::fs::create_dir_all(&self.key_dir())?;
@@ -644,7 +652,7 @@ mod cache_tests {
 
         cache.store(&key, &val, Duration::from_secs(100)).unwrap();
         let present = cache.lookup::<_, String>(&key, Duration::from_secs(100)).unwrap();
-        assert_eq!(present.unwrap().0, "A");
+        assert_eq!(present.unwrap().0, val);
     }
 
     #[test]
@@ -681,9 +689,9 @@ mod cache_tests {
         cache_scoped.store(&key, &val_b, Duration::from_secs(100)).unwrap();
 
         let present = cache.lookup::<_, String>(&key, Duration::from_secs(20)).unwrap();
-        assert_eq!(present.unwrap().0, "A");
+        assert_eq!(present.unwrap().0, val_a);
         let present_scoped = cache_scoped.lookup::<_, String>(&key, Duration::from_secs(20)).unwrap();
-        assert_eq!(present_scoped.unwrap().0, "B");
+        assert_eq!(present_scoped.unwrap().0, val_b);
     }
 
     #[test]
@@ -826,9 +834,7 @@ impl Bkt {
     ///
     /// If looking up, deserializing, executing, or serializing the command fails. This generally
     /// reflects a user error such as an invalid command.
-    // TODO per C-CALLER-CONTROL perhaps this should consume the CommandDesc rather than cloning it
-    //     in execute_subprocess(). See https://rust-lang.github.io/api-guidelines/flexibility.html
-    //     See also C-BUILDER in https://rust-lang.github.io/api-guidelines/type-safety.html
+    // TODO return a two-variant enum Cached/Refreshed rather than a tuple and a zero-duration
     pub fn retrieve(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
         let cached = self.cache.lookup(command, ttl).context("Cache lookup failed")?;
         let result = match cached {
