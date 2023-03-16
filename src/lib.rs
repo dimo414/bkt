@@ -52,6 +52,7 @@ pub struct CommandDesc {
     args: Vec<OsString>,
     cwd: Option<PathBuf>,
     env: BTreeMap<OsString, OsString>,
+    persist_failures: bool,
 }
 
 impl CommandDesc {
@@ -65,6 +66,7 @@ impl CommandDesc {
             args: command.into_iter().map(Into::into).collect(),
             cwd: None,
             env: BTreeMap::new(),
+            persist_failures: true,
         };
         assert!(!ret.args.is_empty(), "Command cannot be empty");
         ret
@@ -156,6 +158,25 @@ impl CommandDesc {
         for (ref key, ref val) in envs {
             self.env.insert(key.as_ref().into(), val.as_ref().into());
         }
+        self
+    }
+
+    /// Configures this command to only be cached if it succeeds - i.e. it returns a zero exit code.
+    /// Commands that return a non-zero exit code will not be cached, and therefore will be rerun on
+    /// each invocation (until they succeed).
+    ///
+    /// **WARNING:** use this option with caution. Discarding invocations that fail can overload
+    /// downstream resources that were protected by the caching layer limiting QPS. For example,
+    /// if a website is rejecting a fraction of requests to shed load and then clients start
+    /// sending _more_ requests when their attempts fail the website could be taken down outright by
+    /// the added load. In other words, using this option can lead to accidental DDoSes.
+    ///
+    /// ```
+    /// let cmd = bkt::CommandDesc::new(["grep", "foo", "/var/log/syslog"]).with_discard_failures(true);
+    /// ```
+    pub fn with_discard_failures(mut self, discard_failures: bool) -> Self {
+        // Invert the boolean so it's not a double negative at usage sites
+        self.persist_failures = !discard_failures;
         self
     }
 }
@@ -718,7 +739,6 @@ mod cache_tests {
 pub struct Bkt {
     cache: Cache,
     cleanup_on_refresh: bool,
-    persist_failures: bool,
 }
 
 impl Bkt {
@@ -754,7 +774,6 @@ impl Bkt {
         Ok(Bkt {
             cache: Cache::new(&cache_dir),
             cleanup_on_refresh: true,
-            persist_failures: true,
         })
     }
 
@@ -774,21 +793,6 @@ impl Bkt {
     /// and [`Bkt::cleanup_thread()`] if you set this to `false`.
     pub fn cleanup_on_refresh(mut self, cleanup: bool) -> Self {
         self.cleanup_on_refresh = cleanup;
-        self
-    }
-
-    /// Configures this instance to not cache invocations that return non-zero exit codes. This only
-    /// affects _writing_ to the cache; if a failed invocation has already been cached (e.g. by a
-    /// different instance) that data will still be used until it expires.
-    ///
-    /// **WARNING:** use this function with caution. Discarding invocations that fail can overload
-    /// downstream resources that were protected by the caching layer limiting QPS. For example,
-    /// if a website is rejecting a fraction of requests to shed load and then clients start
-    /// sending _more_ requests when their attempts fail the website could be taken down outright by
-    /// the added load. In other words, using this function can lead to accidental DDoSes.
-    pub fn discard_failures(mut self, discard_failures: bool) -> Self {
-        // Flip the boolean here to make the conditional in retrieve() clearer
-        self.persist_failures = !discard_failures;
         self
     }
 
@@ -842,7 +846,7 @@ impl Bkt {
             None => {
                 let cleanup_hook = self.maybe_cleanup_once();
                 let result = Bkt::execute_subprocess(command).context("Subprocess execution failed")?;
-                if self.persist_failures || result.exit_code == 0 {
+                if command.persist_failures || result.exit_code == 0 {
                     self.cache.store(command, &result, ttl).context("Cache write failed")?;
                 }
                 Bkt::join_cleanup_thread(cleanup_hook);
@@ -862,7 +866,7 @@ impl Bkt {
     pub fn refresh(&self, command: &CommandDesc, ttl: Duration) -> Result<Invocation> {
         let cleanup_hook = self.maybe_cleanup_once();
         let result = Bkt::execute_subprocess(command).context("Subprocess execution failed")?;
-        if self.persist_failures || result.exit_code == 0 {
+        if command.persist_failures || result.exit_code == 0 {
             self.cache.store(command, &result, ttl).context("Cache write failed")?;
         }
         Bkt::join_cleanup_thread(cleanup_hook);
@@ -959,8 +963,9 @@ mod bkt_tests {
         let code = dir.path("code");
 
         let cmd = CommandDesc::new(
-            ["bash", "-c", r#"cat "${1:?}"; exit "$(< "${2:?}")""#, "arg0", output.to_str().unwrap(), code.to_str().unwrap()]);
-        let bkt = Bkt::create(dir.path("cache")).unwrap().discard_failures(true);
+            ["bash", "-c", r#"cat "${1:?}"; exit "$(< "${2:?}")""#, "arg0", output.to_str().unwrap(), code.to_str().unwrap()])
+            .with_discard_failures(true);
+        let bkt = Bkt::create(dir.path("cache")).unwrap();
 
         write!(File::create(&output).unwrap(), "A").unwrap();
         write!(File::create(&code).unwrap(), "10").unwrap();

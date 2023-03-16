@@ -15,6 +15,7 @@ mod cli {
                                        printf '%s' "${#REPLY}";"#;
     const PRINT_ARGS: &str = r#"args=("$@"); declare -p args;"#;
     const EXIT_WITH: &str = r#"exit "${1:?}";"#;
+    const EXIT_WITH_ENV: &str = r#"exit "${EXIT_WITH:?}";"#;
     const AWAIT_AND_TOUCH: &str = r#"echo awaiting; \
                                      until [[ -e "${1:?}" ]]; do sleep .1; done; \
                                      echo > "${2:?}";"#;
@@ -204,6 +205,21 @@ mod cli {
         // Not cached
         assert_eq!(run(bkt(dir.path("cache")).args(args)),
                    CmdResult { out: "2".into(), err: "".into(), status: Some(1) });
+    }
+
+    #[test]
+    fn discard_failure_cached_separately() {
+        let dir = TestDir::temp();
+
+        let allow_args = ["--", "bash", "-c", EXIT_WITH_ENV, "arg0"];
+        let discard_args = join(&["--discard-failures"], &allow_args);
+
+        // without separate caches a --discard-failures invocation could return a previously-cached
+        // failed result. In 0.5.4 and earlier this would mean result2.status == 14.
+        let result1 = run(bkt(dir.path("cache")).args(allow_args).env("EXIT_WITH", "14"));
+        assert_eq!(result1.status, Some(14));
+        let result2 = run(bkt(dir.path("cache")).args(discard_args).env("EXIT_WITH", "0"));
+        assert_eq!(result2.status, Some(0));
     }
 
     #[test]

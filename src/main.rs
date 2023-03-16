@@ -43,7 +43,6 @@ fn run(cli: Cli) -> Result<i32> {
         Some(cache_dir) => Bkt::create(cache_dir)?,
         None => Bkt::in_tmp()?,
     };
-    bkt = bkt.discard_failures(cli.discard_failures);
     if let Some(scope) = cli.scope {
         bkt = bkt.scoped(scope);
     }
@@ -61,6 +60,10 @@ fn run(cli: Cli) -> Result<i32> {
             .filter(|(k, _)| env_keys.contains(k))
             .collect();
         command = command.with_envs(&envs);
+    }
+
+    if cli.discard_failures {
+        command = command.with_discard_failures(true);
     }
 
     if cli.warm && !cli.force {
