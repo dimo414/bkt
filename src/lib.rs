@@ -15,13 +15,13 @@
 //! ```
 #![warn(missing_docs)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::convert::{TryFrom, TryInto};
 use std::ffi::{OsString, OsStr};
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufReader, ErrorKind, BufWriter, Write};
 use std::path::{PathBuf, Path};
-use std::process::{Command};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Error, Result};
@@ -37,21 +37,27 @@ macro_rules! debug_msg {
     ($($arg:tt)*) => {  }
 }
 
-/// Describes a command to be executed and cached. This struct also serves as the cache key.
-/// It consists of a command line invocation and, optionally, a working directory to execute in and
-/// environment variables to set. When set these fields contribute to the cache key, therefore two
-/// invocations with different working directories set will be cached separately.
+/// A stateless description of a command to be executed and cached. It consists of a command line
+/// invocation and additional metadata about how the command should be cached which are configured
+/// via the `with_*` methods. Instances can be persisted and reused.
+///
+/// Calling any of these methods changes how the invocation's cache key will be constructed,
+/// therefore two invocations with different metadata configured will be cached separately. This
+/// allows - for example - commands that interact with the current working directory to be cached
+/// dependent on the working directory even if the command line arguments are equal.
+///
+/// # Examples
 ///
 /// ```
 /// let cmd = bkt::CommandDesc::new(["echo", "Hello World!"]);
-/// let with_cwd = bkt::CommandDesc::new(["ls"]).with_working_dir("/tmp");
-/// let with_env = bkt::CommandDesc::new(["date"]).with_env_value("TZ", "America/New_York");
+/// let with_cwd = bkt::CommandDesc::new(["ls"]).with_cwd();
+/// let with_env = bkt::CommandDesc::new(["date"]).with_env("TZ");
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct CommandDesc {
     args: Vec<OsString>,
-    cwd: Option<PathBuf>,
-    env: BTreeMap<OsString, OsString>,
+    use_cwd: bool,
+    envs: BTreeSet<OsString>,
     persist_failures: bool,
 }
 
@@ -64,106 +70,78 @@ impl CommandDesc {
     pub fn new<I, S>(command: I) -> Self where I: IntoIterator<Item=S>, S: Into<OsString> {
         let ret = CommandDesc {
             args: command.into_iter().map(Into::into).collect(),
-            cwd: None,
-            env: BTreeMap::new(),
+            use_cwd: false,
+            envs: BTreeSet::new(),
             persist_failures: true,
         };
         assert!(!ret.args.is_empty(), "Command cannot be empty");
         ret
     }
 
-    /// Sets the working directory the command should be run from, and causes the working directory
-    /// to be included in the cache key. If unset the working directory will be inherited from the
-    /// current process' and will _not_ be used to differentiate invocations in separate working
-    /// directories.
-    ///
-    /// ```
-    /// let cmd = bkt::CommandDesc::new(["pwd"]).with_working_dir("/tmp");
-    /// ```
-    pub fn with_working_dir<P: AsRef<Path>>(mut self, cwd: P) -> Self {
-        self.cwd = Some(cwd.as_ref().into());
-        self
-    }
-
-    /// Sets the working directory to the current process' working directory. This has no effect
-    /// on the subprocess that will be executed (assuming the current process' working directory
-    /// remains unchanged) but does cause the working directory to be included in the cache key.
-    /// Commands that depend on the working directory should call this in order to cache executions
-    /// in different working directories separately.
-    ///
-    /// # Errors
-    ///
-    /// This delegates to [`std::env::current_dir()`] and will fail if it does.
+    /// Specifies that the current process' working directory should be included in the cache key.
+    /// Commands that depend on the working directory (e.g. `ls` or `git status`) should call this
+    /// in order to cache executions in different working directories separately.
     ///
     /// # Examples
     ///
     /// ```
-    /// # fn main() -> anyhow::Result<()> {
-    /// let cmd = bkt::CommandDesc::new(["pwd"]).with_cwd()?;
-    /// # Ok(()) }
+    /// let cmd = bkt::CommandDesc::new(["pwd"]).with_cwd();
     /// ```
-    pub fn with_cwd(self) -> Result<Self> {
-        Ok(self.with_working_dir(std::env::current_dir()?))
-    }
-
-    /// Adds the given key/value pair to the environment the command should be run from, and causes
-    /// this pair to be included in the cache key.
-    ///
-    /// ```
-    /// let cmd = bkt::CommandDesc::new(["pwd"]).with_env_value("FOO", "bar");
-    /// ```
-    pub fn with_env_value<K, V>(mut self, key: K, value: V) -> Self
-            where K: AsRef<OsStr>, V: AsRef<OsStr> {
-        self.env.insert(key.as_ref().into(), value.as_ref().into());
+    pub fn with_cwd(mut self) -> Self {
+        self.use_cwd = true;
         self
     }
 
-    /// Looks up the given environment variable in the current process' environment and, if set,
-    /// adds that key/value pair to the environment the command should be run from, and causes this
-    /// pair to be included in the cache key. This has no effect on the subprocess that will be
-    /// executed (assuming the current process' environment remains unchanged).
+    /// Specifies that the given environment variable should be included in the cache key. Commands
+    /// that depend on the values of certain environment variables (e.g. `LANG`, `PATH`, or `TZ`)
+    /// should call this in order to cache such executions separately. Although it's possible to
+    /// pass `PWD` here calling [`with_cwd()`] is generally recommended instead for clarity and
+    /// consistency with subprocesses that don't read this environment variable.
     ///
-    /// If the given variable name is not found in the current process' environment this call is a
-    /// no-op, and the cache key will remain unchanged.
+    /// Note: If the given variable name is not found in the current process' environment at
+    /// execution time the variable is _not_ included in the cache key, and it will be cached as if
+    /// the environment variable had not been specified at all.
+    ///
+    /// [`with_cwd()`]: CommandDesc::with_cwd
+    ///
+    /// # Examples
     ///
     /// ```
     /// let cmd = bkt::CommandDesc::new(["date"]).with_env("TZ");
     /// ```
-    pub fn with_env<K>(self, key: K) -> Self where K: AsRef<OsStr> {
-        match std::env::var_os(&key) {
-            Some(val) => self.with_env_value(&key, val),
-            None => self,
-        }
-    }
-
-    /// Adds the given key/value pairs to the environment the command should be run from, and causes
-    /// these pair to be included in the cache key.
-    ///
-    /// ```
-    /// use std::env;
-    /// use std::collections::HashMap;
-    ///
-    /// let important_envs : HashMap<String, String> =
-    ///     env::vars().filter(|&(ref k, _)|
-    ///         k == "TERM" || k == "TZ" || k == "LANG" || k == "PATH"
-    ///     ).collect();
-    /// let cmd = bkt::CommandDesc::new(["..."]).with_envs(&important_envs);
-    /// ```
-    pub fn with_envs<I, K, V>(mut self, envs: I) -> Self
-        where
-            I: IntoIterator<Item=(K, V)>,
-            K: AsRef<OsStr>,
-            V: AsRef<OsStr>,
-    {
-        for (ref key, ref val) in envs {
-            self.env.insert(key.as_ref().into(), val.as_ref().into());
-        }
+    pub fn with_env<K>(mut self, key: K) -> Self where K: AsRef<OsStr> {
+        self.envs.insert(key.as_ref().into());
         self
     }
 
-    /// Configures this command to only be cached if it succeeds - i.e. it returns a zero exit code.
-    /// Commands that return a non-zero exit code will not be cached, and therefore will be rerun on
-    /// each invocation (until they succeed).
+    /// Specifies that the given environment variables should be included in the cache key. Commands
+    /// that depend on the values of certain environment variables (e.g. `LANG`, `PATH`, or `TZ`)
+    /// should call this in order to cache such executions separately. Although it's possible to
+    /// pass `PWD` here calling [`with_cwd()`] is generally recommended instead for clarity and
+    /// consistency with subprocesses that don't read this environment variable.
+    ///
+    /// Note: If a given variable name is not found in the current process' environment at execution
+    /// time that variable is _not_ included in the cache key, and it will be cached as if the
+    /// environment variable had not been specified at all.
+    ///
+    /// [`with_cwd()`]: CommandDesc::with_cwd
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cmd = bkt::CommandDesc::new(["date"]).with_envs(["LANG", "TZ"]);
+    /// ```
+    pub fn with_envs<I, E>(mut self, envs: I) -> Self where
+        I: IntoIterator<Item=E>,
+        E: AsRef<OsStr>,
+    {
+        self.envs.extend(envs.into_iter().map(|e| e.as_ref().into()));
+        self
+    }
+
+    /// Specifies this command should only be cached if it succeeds - i.e. it returns a zero exit
+    /// code. Commands that return a non-zero exit code will not be cached, and therefore will be
+    /// rerun on each invocation (until they succeed).
     ///
     /// **WARNING:** use this option with caution. Discarding invocations that fail can overload
     /// downstream resources that were protected by the caching layer limiting QPS. For example,
@@ -179,9 +157,151 @@ impl CommandDesc {
         self.persist_failures = !discard_failures;
         self
     }
+
+    /// Constructs a [`CommandState`] instance, capturing application state that will be used in the
+    /// cache key, such as the current working directory and any specified environment variables.
+    /// The `CommandState` can also be further customized to change how the subprocess is invoked.
+    ///
+    /// Most callers should be able to pass a `CommandDesc` directly to a [`Bkt`] instance without
+    /// needing to construct a separate `CommandState` first.
+    ///
+    /// Example:
+    ///
+    /// ```no_run
+    /// # fn main() -> anyhow::Result<()> {
+    /// # use std::time::Duration;
+    /// let bkt = bkt::Bkt::in_tmp()?;
+    /// let cmd = bkt::CommandDesc::new(["foo", "bar"]).capture_state()?.with_env("FOO", "BAR");
+    /// let (result, age) = bkt.retrieve(cmd, Duration::from_secs(3600))?;
+    /// # Ok(()) }
+    /// ```
+    pub fn capture_state(&self) -> Result<CommandState> {
+        let cwd = if self.use_cwd {
+            Some(std::env::current_dir()?)
+        } else {
+            None
+        };
+        let envs = self.envs.iter()
+            .flat_map(|e| std::env::var_os(e).map(|v| (e.clone(), v)))
+            .collect();
+
+        Ok(CommandState { args: self.args.clone(), cwd, envs, persist_failures: self.persist_failures })
+    }
 }
 
-impl CacheKey for CommandDesc {
+/// The stateful sibling of [`CommandDesc`] which represents a command to be executed and cached
+/// along with environment state (e.g. the current working directory) at the time the `CommandState`
+/// instance is constructed. It consists of a command line invocation and application state
+/// determining how the command should be cached and executed. Additional `with_*` methods are
+/// provided on this type for further modifying how the subprocess will be executed.
+///
+/// Calling any of these methods changes how the invocation's cache key will be constructed,
+/// therefore two invocations with different configured state will be cached separately, in the same
+/// manner as the `with_*` methods on `CommandDesc`.
+///
+/// # Examples
+///
+/// ```
+/// # fn main() -> anyhow::Result<()> {
+/// let cmd = bkt::CommandDesc::new(["echo", "Hello World!"]).capture_state();
+/// let with_custom_wd = bkt::CommandDesc::new(["ls"]).capture_state()?.with_working_dir("/");
+/// let with_env = bkt::CommandDesc::new(["date"]).capture_state()?.with_env("TZ", "UTC");
+/// # Ok(()) }
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct CommandState {
+    // TODO Borrow<Vec<OsString>> or Cow<Vec<OsString>> might be better, need to validate
+    //      serialization. Or maybe just make it &Vec<OsString> and add a lifetime to CommandState?
+    args: Vec<OsString>,
+    cwd: Option<PathBuf>,
+    envs: BTreeMap<OsString, OsString>,
+    persist_failures: bool,
+}
+
+impl CommandState {
+    /// Sets the working directory the command should be run from, and causes this working directory
+    /// to be included in the cache key. If unset the working directory will be inherited from the
+    /// current process' and will _not_ be used to differentiate invocations in separate working
+    /// directories.
+    ///
+    /// ```
+    /// # fn main() -> anyhow::Result<()> {
+    /// let cmd = bkt::CommandDesc::new(["pwd"]);
+    /// let state = cmd.capture_state()?.with_working_dir("/tmp");
+    /// # Ok(()) }
+    /// ```
+    pub fn with_working_dir<P: AsRef<Path>>(mut self, cwd: P) -> Self {
+        self.cwd = Some(cwd.as_ref().into());
+        self
+    }
+
+    /// Adds the given key/value pair to the environment the command should be run from, and causes
+    /// this pair to be included in the cache key.
+    ///
+    /// ```
+    /// # fn main() -> anyhow::Result<()> {
+    /// let cmd = bkt::CommandDesc::new(["pwd"]);
+    /// let state = cmd.capture_state()?.with_env("FOO", "bar");
+    /// # Ok(()) }
+    /// ```
+    pub fn with_env<K, V>(mut self, key: K, value: V) -> Self
+        where K: AsRef<OsStr>, V: AsRef<OsStr> {
+        self.envs.insert(key.as_ref().into(), value.as_ref().into());
+        self
+    }
+
+    /// Adds the given key/value pairs to the environment the command should be run from, and causes
+    /// these pair to be included in the cache key.
+    ///
+    /// ```
+    /// # fn main() -> anyhow::Result<()> {
+    /// use std::env;
+    /// use std::collections::HashMap;
+    ///
+    /// let important_envs : HashMap<String, String> =
+    ///     env::vars().filter(|&(ref k, _)|
+    ///         k == "TERM" || k == "TZ" || k == "LANG" || k == "PATH"
+    ///     ).collect();
+    /// let cmd = bkt::CommandDesc::new(["..."]);
+    /// let state = cmd.capture_state()?.with_envs(&important_envs);
+    /// # Ok(()) }
+    /// ```
+    pub fn with_envs<I, K, V>(mut self, envs: I) -> Self
+        where
+            I: IntoIterator<Item=(K, V)>,
+            K: AsRef<OsStr>,
+            V: AsRef<OsStr>,
+    {
+        for (ref key, ref val) in envs {
+            self.envs.insert(key.as_ref().into(), val.as_ref().into());
+        }
+        self
+    }
+}
+
+impl TryFrom<&CommandDesc> for CommandState {
+    type Error = anyhow::Error;
+
+    fn try_from(desc: &CommandDesc) -> Result<Self> {
+        desc.capture_state()
+    }
+}
+
+impl From<&CommandState> for std::process::Command {
+    fn from(cmd: &CommandState) -> Self {
+        let mut command = std::process::Command::new(&cmd.args[0]);
+        command.args(&cmd.args[1..]);
+        if let Some(cwd) = &cmd.cwd {
+            command.current_dir(cwd);
+        }
+        if !cmd.envs.is_empty() {
+            command.envs(&cmd.envs);
+        }
+        command
+    }
+}
+
+impl CacheKey for CommandState {
     fn debug_label(&self) -> Option<String> {
         Some(self.args.iter()
             .map(|a| a.to_string_lossy()).collect::<Vec<_>>().join("-")
@@ -192,40 +312,27 @@ impl CacheKey for CommandDesc {
     }
 }
 
-impl From<&CommandDesc> for std::process::Command {
-    fn from(desc: &CommandDesc) -> Self {
-        let mut command = Command::new(&desc.args[0]);
-        command.args(&desc.args[1..]);
-        if let Some(cwd) = &desc.cwd {
-            command.current_dir(cwd);
-        }
-        if !desc.env.is_empty() {
-            command.envs(&desc.env);
-        }
-        command
-    }
-}
-
 #[cfg(test)]
 mod cmd_tests {
     use super::*;
 
     #[test]
     fn debug_label() {
-        assert_eq!(CommandDesc::new(["foo", "bar", "b&r _- a"]).debug_label(), Some("foo-bar-br__-_a".into()));
+        let cmd = CommandDesc::new(["foo", "bar", "b&r _- a"]);
+        assert_eq!(CommandState::try_from(&cmd).unwrap().debug_label(), Some("foo-bar-br__-_a".into()));
     }
 
     #[test]
     fn collisions() {
+        std::env::set_var("FOO", "BAR");
         let commands = [
             CommandDesc::new(["foo"]),
             CommandDesc::new(["foo", "bar"]),
             CommandDesc::new(["foo", "b", "ar"]),
             CommandDesc::new(["foo", "b ar"]),
-            CommandDesc::new(["foo"]).with_working_dir("/bar"),
-            CommandDesc::new(["foo"]).with_working_dir("/bar/baz"),
-            CommandDesc::new(["foo"]).with_env_value("a", "b"),
-            CommandDesc::new(["foo"]).with_working_dir("/bar").with_env_value("a", "b"),
+            CommandDesc::new(["foo"]).with_cwd(),
+            CommandDesc::new(["foo"]).with_env("FOO"),
+            CommandDesc::new(["foo"]).with_cwd().with_env("FOO"),
         ];
 
         // https://old.reddit.com/r/rust/comments/2koptu/best_way_to_visit_all_pairs_in_a_vec/clnhxr5/
@@ -233,7 +340,10 @@ mod cmd_tests {
         for a in &commands {
             iter.next();
             for b in iter.clone() {
-                assert_ne!(a.cache_key(), b.cache_key(), "{:?} and {:?} have equivalent hashes", a, b);
+                assert_ne!(
+                    CommandState::try_from(a).unwrap().cache_key(),
+                    CommandState::try_from(b).unwrap().cache_key(),
+                    "{:?} and {:?} have equivalent hashes", a, b);
             }
         }
     }
@@ -735,6 +845,18 @@ mod cache_tests {
 
 /// This struct is the main API entry point for the `bkt` library, allowing callers to invoke and
 /// cache subprocesses for later reuse.
+///
+/// Example:
+///
+/// ```no_run
+/// # fn main() -> anyhow::Result<()> {
+/// # use std::time::Duration;
+/// let bkt = bkt::Bkt::in_tmp()?;
+/// let cmd = bkt::CommandDesc::new(["curl", "http://expensive.api/foo"]);
+/// let (result, age) = bkt.retrieve(&cmd, Duration::from_secs(60*60))?;
+/// println!("Retrieved: {:?}\nAge: {:?}", result, age);
+/// # Ok(()) }
+/// ```
 #[derive(Clone, Debug)]
 pub struct Bkt {
     cache: Cache,
@@ -811,13 +933,14 @@ impl Bkt {
         Ok(())
     }
 
-    fn execute_subprocess(desc: &CommandDesc) -> Result<Invocation> {
-        let mut cmd: std::process::Command = desc.into();
+    fn execute_subprocess(cmd: impl Into<std::process::Command>) -> Result<Invocation> {
+        let mut command: std::process::Command = cmd.into();
         let start = Instant::now();
         // TODO write to stdout/stderr while running, rather than after the process completes?
         // See https://stackoverflow.com/q/66060139
-        let result = cmd.output()
-            .with_context(|| format!("Failed to run command {}", desc.args[0].to_string_lossy()))?;
+        let result = command.output()
+            .with_context(|| format!("Failed to run command {}",
+                                     command.get_args().next().expect("Executable missing").to_string_lossy()))?;
         let runtime = start.elapsed();
         Ok(Invocation {
             stdout: result.stdout,
@@ -839,15 +962,19 @@ impl Bkt {
     /// If looking up, deserializing, executing, or serializing the command fails. This generally
     /// reflects a user error such as an invalid command.
     // TODO return a two-variant enum Cached/Refreshed rather than a tuple and a zero-duration
-    pub fn retrieve(&self, command: &CommandDesc, ttl: Duration) -> Result<(Invocation, Duration)> {
-        let cached = self.cache.lookup(command, ttl).context("Cache lookup failed")?;
+    pub fn retrieve<T>(&self, command: T, ttl: Duration) -> Result<(Invocation, Duration)> where
+        T: TryInto<CommandState>,
+        anyhow::Error: From<T::Error>, // https://stackoverflow.com/a/72627328
+    {
+        let command = command.try_into()?;
+        let cached = self.cache.lookup(&command, ttl).context("Cache lookup failed")?;
         let result = match cached {
             Some((cached, mtime)) => (cached, mtime.elapsed()?),
             None => {
                 let cleanup_hook = self.maybe_cleanup_once();
-                let result = Bkt::execute_subprocess(command).context("Subprocess execution failed")?;
+                let result = Bkt::execute_subprocess(&command).context("Subprocess execution failed")?;
                 if command.persist_failures || result.exit_code == 0 {
-                    self.cache.store(command, &result, ttl).context("Cache write failed")?;
+                    self.cache.store(&command, &result, ttl).context("Cache write failed")?;
                 }
                 Bkt::join_cleanup_thread(cleanup_hook);
                 (result, Duration::default())
@@ -863,11 +990,15 @@ impl Bkt {
     ///
     /// If executing or serializing the command fails. This generally reflects a user error such as
     /// an invalid command.
-    pub fn refresh(&self, command: &CommandDesc, ttl: Duration) -> Result<Invocation> {
+    pub fn refresh<T>(&self, command: T, ttl: Duration) -> Result<Invocation> where
+        T: TryInto<CommandState>,
+        anyhow::Error: From<T::Error>, // https://stackoverflow.com/a/72627328
+    {
+        let command = command.try_into()?;
         let cleanup_hook = self.maybe_cleanup_once();
-        let result = Bkt::execute_subprocess(command).context("Subprocess execution failed")?;
+        let result = Bkt::execute_subprocess(&command).context("Subprocess execution failed")?;
         if command.persist_failures || result.exit_code == 0 {
-            self.cache.store(command, &result, ttl).context("Cache write failed")?;
+            self.cache.store(&command, &result, ttl).context("Cache write failed")?;
         }
         Bkt::join_cleanup_thread(cleanup_hook);
         Ok(result)
@@ -991,14 +1122,48 @@ mod bkt_tests {
 
     #[test]
     fn with_working_dir() {
-        let dir = TestDir::temp().create("dir", FileType::Dir);
-        let cwd = dir.path("dir");
-        let cmd = CommandDesc::new(["bash", "-c", "echo Hello World > file"]).with_working_dir(&cwd);
+        let dir = TestDir::temp().create("wd", FileType::Dir);
+        let work_dir = dir.path("wd");
+        let cmd = CommandDesc::new(["bash", "-c", "echo Hello World > file"]);
+        let state = cmd.capture_state().unwrap().with_working_dir(&work_dir);
         let bkt = Bkt::create(dir.path("cache")).unwrap();
-        let (result, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        let (result, _) = bkt.retrieve(state, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.exit_code(), 0);
-        assert_eq!(std::fs::read_to_string(cwd.join("file")).unwrap(), "Hello World\n");
+        assert_eq!(std::fs::read_to_string(work_dir.join("file")).unwrap(), "Hello World\n");
+    }
+
+    #[test]
+    fn cwd_and_working_dir_share_cache() {
+        let old_cwd = std::env::current_dir().unwrap();
+
+        let dir = TestDir::temp().create("wd", FileType::Dir);
+        let wd = dir.path("wd");
+        let bkt = Bkt::create(dir.path("cache")).unwrap();
+        // Note we haven't changed the cwd yet - use_cwd() shouldn't read it
+        let cmd = CommandDesc::new(["bash", "-c", "pwd; echo '.' > file"]).with_cwd();
+        // Now the cwd is captured, but overwritten by with_working_dir()
+        let state = cmd.capture_state().unwrap().with_working_dir(&wd);
+        let (result, _) = bkt.retrieve(state, Duration::from_secs(10)).unwrap();
+        assert_eq!(result.stdout_utf8(), format!("{}\n", wd.to_string_lossy()));
+        assert_eq!(result.stderr_utf8(), "");
+        assert_eq!(result.exit_code(), 0);
+
+        // now change the cwd and see it get captured lazily
+        std::env::set_current_dir(&wd).unwrap();
+        let (result, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(result.stdout_utf8(), format!("{}\n", wd.to_string_lossy()));
+        assert_eq!(result.stderr_utf8(), "");
+        assert_eq!(result.exit_code(), 0);
+
+        // and the file was only written to once, hence the cache was shared
+        assert_eq!(std::fs::read_to_string(wd.join("file")).unwrap(), ".\n");
+
+        // Restore the original cwd
+        // NB this could fail to be reached if the test fails, which could cause other confusing
+        // errors. An RAII pattern using Drop, similar to absl::Cleanup, would be nicer but I'm not
+        // aware of a standard pattern for this atm.
+        std::env::set_current_dir(old_cwd).unwrap();
     }
 
     #[test]
@@ -1008,9 +1173,10 @@ mod bkt_tests {
     #[cfg(not(feature = "debug"))]
     fn with_env() {
         let dir = TestDir::temp().create("dir", FileType::Dir);
-        let cmd = CommandDesc::new(["bash", "-c", r#"echo "FOO:${FOO:?}""#]).with_env_value("FOO", "bar");
+        let cmd = CommandDesc::new(["bash", "-c", r#"echo "FOO:${FOO:?}""#]).capture_state().unwrap()
+            .with_env("FOO", "bar");
         let bkt = Bkt::create(dir.path("cache")).unwrap();
-        let (result, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        let (result, _) = bkt.retrieve(cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.exit_code(), 0);
         assert_eq!(result.stdout_utf8(), "FOO:bar\n");

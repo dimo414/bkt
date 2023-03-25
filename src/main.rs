@@ -1,4 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -50,15 +49,11 @@ fn run(cli: Cli) -> Result<i32> {
     let mut command = CommandDesc::new(cli.command);
 
     if cli.cwd {
-        command = command.with_cwd()?;
+        command = command.with_cwd();
     }
 
-    let env_keys: BTreeSet<_> = cli.env.into_iter().flatten().collect();
-
-    if !env_keys.is_empty() {
-        let envs: BTreeMap<_, _> = std::env::vars_os()
-            .filter(|(k, _)| env_keys.contains(k))
-            .collect();
+    let envs = cli.env.into_iter().flatten().collect::<Vec<_>>();
+    if !envs.is_empty() {
         command = command.with_envs(&envs);
     }
 
