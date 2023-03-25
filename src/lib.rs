@@ -619,9 +619,10 @@ impl Cache {
     ///
     /// Note: This method takes references to the key and value because they are serialized
     /// externally, therefore consuming either parameter is unhelpful. An in-memory implementation
-    /// would need to do an internal .clone() which is at odds with C-CALLER-CONTROL
-    /// (https://rust-lang.github.io/api-guidelines/flexibility.html) but Cache is intended for
-    /// serialization use cases so some overhead in the in-memory case may be acceptable.
+    /// would need to do an internal `.clone()` which is at odds with
+    /// [`C-CALLER-CONTROL`](https://rust-lang.github.io/api-guidelines/flexibility.html) but Cache
+    /// is intended for serialization use cases so some overhead in the in-memory case may be
+    /// acceptable.
     // TODO C-INTERMEDIATE suggests emulating HashMap::insert and returning any existing value in
     //     the cache, though it would be expensive to construct this so perhaps should be a callback
     fn store<K, V>(&self, key: &K, value: &V, ttl: Duration) -> Result<()>
