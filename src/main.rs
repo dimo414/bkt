@@ -5,7 +5,7 @@ use std::process::{Command, exit, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use clap::{AppSettings, Parser};
+use clap::Parser;
 
 use bkt::{CommandDesc, Bkt};
 
@@ -52,12 +52,12 @@ fn run(cli: Cli) -> Result<i32> {
         command = command.with_cwd();
     }
 
-    let envs = cli.env.into_iter().flatten().collect::<Vec<_>>();
+    let envs = cli.env;
     if !envs.is_empty() {
         command = command.with_envs(&envs);
     }
 
-    let files = cli.modtime.into_iter().flatten().collect::<Vec<_>>();
+    let files = cli.modtime;
     if !files.is_empty() {
         command = command.with_modtimes(&files);
     }
@@ -105,61 +105,60 @@ fn run(cli: Cli) -> Result<i32> {
     Ok(invocation.exit_code())
 }
 
-#[derive(Parser)]
-#[clap(setting = AppSettings::DeriveDisplayOrder)]
-#[clap(about, version)]
+#[derive(Debug, Parser)]
+#[command(about, version)]
 struct Cli {
     /// The command to run
-    #[clap(required = true, last = true)]
+    #[arg(required = true, last = true)]
     command: Vec<OsString>,
 
     /// Duration the cached result will be valid for
-    #[clap(long, default_value = "60s", visible_alias = "time-to-live", env = "BKT_TTL")]
+    #[arg(long, value_name = "DURATION", default_value = "60s", visible_alias = "time-to-live", env = "BKT_TTL")]
     ttl: humantime::Duration,
 
     /// Duration after which the result will be asynchronously refreshed
-    #[clap(long, conflicts_with = "warm")]
+    #[arg(long, value_name = "DURATION", conflicts_with = "warm")]
     stale: Option<humantime::Duration>,
 
     /// Asynchronously execute and cache the given command, even if it's already cached
-    #[clap(long)]
+    #[arg(long)]
     warm: bool,
 
     /// Execute and cache the given command, even if it's already cached
-    #[clap(long, conflicts_with = "warm")]
+    #[arg(long, conflicts_with = "warm")]
     force: bool,
 
     /// Includes the current working directory in the cache key,
     /// so that the same command run in different directories caches separately
-    #[clap(long, visible_alias = "use-working-dir")]
+    #[arg(long, visible_alias = "use-working-dir")]
     cwd: bool,
 
     /// Includes the given environment variable in the cache key,
     /// so that the same command run with different values for the given variables caches separately
-    #[clap(long, visible_alias = "use-environment")]
-    env: Option<Vec<OsString>>,
+    #[arg(long, value_name = "NAME", visible_alias = "use-environment")]
+    env: Vec<OsString>,
 
-    // Includes the last modification time of the given file(s) in the cache key,
+    /// Includes the last modification time of the given file(s) in the cache key,
     /// so that the same command run with different modtimes for the given files caches separately
-    #[clap(long, visible_alias = "use_file_modtime", multiple_occurrences=true, use_value_delimiter=false)]
-    modtime: Option<Vec<OsString>>,
+    #[arg(long, value_name = "FILE", visible_alias = "use-file-modtime")]
+    modtime: Vec<OsString>,
 
     /// Don't cache invocations that fail (non-zero exit code).
     /// USE CAUTION when passing this flag, as unexpected failures can lead to a spike in invocations
     /// which can exacerbate ongoing issues, effectively a DDoS.
-    #[clap(long)]
+    #[arg(long)]
     discard_failures: bool,
 
     /// If set, all cached data will be scoped to this value,
     /// preventing collisions with commands cached with different scopes
-    #[clap(long, env = "BKT_SCOPE")]
+    #[arg(long, value_name = "NAME", env = "BKT_SCOPE")]
     scope: Option<String>,
 
     /// The directory under which to persist cached invocations;
     /// defaults to the system's temp directory.
     /// Setting this to a directory backed by RAM or an SSD, such as a tmpfs partition,
     /// will significantly reduce caching overhead.
-    #[clap(long, env = "BKT_CACHE_DIR")]
+    #[arg(long, value_name = "DIR", env = "BKT_CACHE_DIR")]
     cache_dir: Option<PathBuf>,
 }
 
