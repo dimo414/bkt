@@ -374,7 +374,7 @@ impl CommandState {
         }
         if !self.modtimes.is_empty() {
             parts.push(self.modtimes.iter()
-                .map(|(p, m)| format!("{}:{}", p.to_string_lossy(), to_timestamp(&m)))
+                .map(|(p, m)| format!("{}:{}", p.to_string_lossy(), to_timestamp(m)))
                 .collect::<Vec<_>>().join(" "));
         }
         parts.join(" | ")
@@ -544,7 +544,7 @@ mod file_lock_tests {
     #[test]
     fn locks() {
         let dir = TestDir::temp();
-        let lock = FileLock::try_acquire(&dir.root(), "test", Duration::from_secs(100)).unwrap();
+        let lock = FileLock::try_acquire(dir.root(), "test", Duration::from_secs(100)).unwrap();
         let lock = lock.expect("Could not take lock");
         assert!(dir.path("test.lock").exists());
         std::mem::drop(lock);
@@ -554,14 +554,14 @@ mod file_lock_tests {
     #[test]
     fn already_locked() {
         let dir = TestDir::temp();
-        let lock = FileLock::try_acquire(&dir.root(), "test", Duration::from_secs(100)).unwrap();
+        let lock = FileLock::try_acquire(dir.root(), "test", Duration::from_secs(100)).unwrap();
         let lock = lock.expect("Could not take lock");
 
-        let attempt = FileLock::try_acquire(&dir.root(), "test", Duration::from_secs(100)).unwrap();
+        let attempt = FileLock::try_acquire(dir.root(), "test", Duration::from_secs(100)).unwrap();
         assert!(attempt.is_none());
 
         std::mem::drop(lock);
-        let attempt = FileLock::try_acquire(&dir.root(), "test", Duration::from_secs(100)).unwrap();
+        let attempt = FileLock::try_acquire(dir.root(), "test", Duration::from_secs(100)).unwrap();
         assert!(attempt.is_some());
     }
 }
@@ -847,7 +847,7 @@ mod cache_tests {
 
     fn dir_contents<P: AsRef<Path>>(dir: P) -> Vec<String> {
         fn contents(dir: &Path, ret: &mut Vec<PathBuf>) -> Result<()> {
-            for entry in std::fs::read_dir(&dir)? {
+            for entry in std::fs::read_dir(dir)? {
                 let path = entry?.path();
                 if path.is_dir() {
                     contents(&path, ret)?;
@@ -879,7 +879,7 @@ mod cache_tests {
         let dir = TestDir::temp();
         let key = "foo".to_string();
         let val = "A".to_string();
-        let cache = Cache::new(&dir.root());
+        let cache = Cache::new(dir.root());
 
         let absent = cache.lookup::<_, String>(&key, Duration::from_secs(100)).unwrap();
         assert!(absent.is_none());
@@ -894,7 +894,7 @@ mod cache_tests {
         let dir = TestDir::temp();
         let key = "foo".to_string();
         let val = "A".to_string();
-        let cache = Cache::new(&dir.root());
+        let cache = Cache::new(dir.root());
 
         cache.store(&key, &val, Duration::from_secs(5)).unwrap(); // store duration doesn't affect lookups
         make_dir_stale(dir.root(), Duration::from_secs(15)).unwrap();
@@ -916,8 +916,8 @@ mod cache_tests {
         let key = "foo".to_string();
         let val_a = "A".to_string();
         let val_b = "B".to_string();
-        let cache = Cache::new(&dir.root());
-        let cache_scoped = Cache::new(&dir.root()).scoped("scope".into());
+        let cache = Cache::new(dir.root());
+        let cache_scoped = Cache::new(dir.root()).scoped("scope".into());
 
         cache.store(&key, &val_a, Duration::from_secs(100)).unwrap();
         cache_scoped.store(&key, &val_b, Duration::from_secs(100)).unwrap();
@@ -933,7 +933,7 @@ mod cache_tests {
         let dir = TestDir::temp();
         let key = "foo".to_string();
         let val = "A".to_string();
-        let cache = Cache::new(&dir.root());
+        let cache = Cache::new(dir.root());
 
         cache.store(&key, &val, Duration::from_secs(5)).unwrap();
         make_dir_stale(dir.root(), Duration::from_secs(10)).unwrap();
@@ -1289,7 +1289,7 @@ mod bkt_tests {
     fn with_modtime() {
         let dir = TestDir::temp().create("dir", FileType::Dir);
         let file = dir.path("file");
-        let cmd = CommandDesc::new(["cat", &file.to_str().unwrap()]);
+        let cmd = CommandDesc::new(["cat", file.to_str().unwrap()]);
         let cmd_modtime = cmd.clone().with_modtime(&file);
         let bkt = Bkt::create(dir.path("cache")).unwrap();
         write!(File::create(&file).unwrap(), "A").unwrap();

@@ -265,7 +265,7 @@ mod cli {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "..");
 
         // But cached success is still returned
-        assert_eq!(succeed(bkt(dir.path("cache")).args(&args)), "1");
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "1");
     }
 
     #[test]
