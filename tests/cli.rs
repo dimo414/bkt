@@ -1,7 +1,7 @@
 mod cli {
     use std::path::Path;
     use std::process::{Command, Stdio};
-    use std::time::{SystemTime, Duration};
+    use std::time::{SystemTime, Duration, Instant};
 
     use anyhow::Result;
     use test_dir::{TestDir, DirBuilder, FileType};
@@ -58,7 +58,11 @@ mod cli {
 
     fn succeed(cmd: &mut Command) -> String {
         let result = run(cmd);
-        assert_eq!(result.err, "");
+        if !cfg!(feature="debug") {
+            // debug writes to stderr, so don't bother checking it in that mode
+            // TODO annotate any tests that aren't debug-compatible and add CI coverage
+            assert_eq!(result.err, "");
+        }
         assert_eq!(result.status, Some(0));
         result.out
     }
@@ -67,7 +71,16 @@ mod cli {
         std::fs::metadata(path).expect("No metadata").modified().expect("No modtime")
     }
 
+    fn wait_for_modification(path: &Path, orig_modtime: &SystemTime) {
+        let expired = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < expired {
+            if &modtime(path) != orig_modtime { return; }
+        }
+        panic!("{:?} modtime has not changed", path);
+    }
+
     fn make_dir_stale<P: AsRef<Path>>(dir: P, age: Duration) -> Result<()> {
+        debug_assert!(dir.as_ref().is_dir());
         let desired_time = SystemTime::now() - age;
         let stale_time = filetime::FileTime::from_system_time(desired_time);
         for entry in std::fs::read_dir(dir)? {
@@ -80,6 +93,14 @@ mod cli {
                 make_dir_stale(&path, age)?;
             }
         }
+        Ok(())
+    }
+
+    fn make_file_stale<P: AsRef<Path>>(file: P, age: Duration) -> Result<()> {
+        debug_assert!(file.as_ref().is_file());
+        let desired_time = SystemTime::now() - age;
+        let stale_time = filetime::FileTime::from_system_time(desired_time);
+        filetime::set_file_mtime(&file, stale_time)?;
         Ok(())
     }
 
@@ -181,14 +202,11 @@ mod cli {
         assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "1");
 
         let last_mod = modtime(&file);
+        std::thread::sleep(Duration::from_secs(1)); // Avoid issues with subsecond modtime precision
         make_dir_stale(dir.path("cache"), Duration::from_secs(15)).unwrap();
         assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "1");
 
-        for _ in 1..10 {
-            if modtime(&file) > last_mod { break; }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        assert!(modtime(&file) > last_mod);
+        wait_for_modification(&file, &last_mod);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "..");
         assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "2");
     }
@@ -241,13 +259,9 @@ mod cli {
         make_dir_stale(dir.path("cache"), Duration::from_secs(15)).unwrap();
         assert_eq!(run(bkt(dir.path("cache")).args(&discard_stale_args)),
                    CmdResult { out: "1".into(), err: "".into(), status: Some(1) });
+        wait_for_modification(&file, &last_mod);
 
-        for _ in 1..10 {
-            if modtime(&file) > last_mod { break; }
-            std::thread::sleep(Duration::from_millis(100));
-        }
         // Command ran
-        assert!(modtime(&file) > last_mod, "{:?} !> {:?}", modtime(&file), last_mod);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "..");
 
         // but cache was not updated
@@ -366,6 +380,30 @@ mod cli {
         let env = succeed(bkt(dir.path("cache")).args(&env_args)
             .env("FOO", "2").env("BAR", "2").env("BAZ", "5"));
         assert_eq!(env, "foo:2 bar:2 baz:2"); // BAZ doesn't invalidate cache
+    }
+
+    #[test]
+    fn respects_modtime() {
+        let dir = TestDir::temp();
+        let file = dir.path("file");
+        let watch_file = dir.path("watch");
+        let args = ["--modtime", watch_file.to_str().unwrap(), "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
+        let no_file_result = succeed(bkt(dir.path("cache")).args(args));
+        // File absent is cached
+        assert_eq!(no_file_result, "1");
+        assert_eq!(no_file_result, succeed(bkt(dir.path("cache")).args(args)));
+
+        // create a new file, invalidating cache
+        File::create(&watch_file).unwrap();
+        let new_file_result = succeed(bkt(dir.path("cache")).args(args));
+        assert_eq!(new_file_result, "2");
+        assert_eq!(new_file_result, succeed(bkt(dir.path("cache")).args(args)));
+
+        // update the modtime, again invalidating the cache
+        make_file_stale(&watch_file, Duration::from_secs(10)).unwrap();
+        let old_file_result = succeed(bkt(dir.path("cache")).args(args));
+        assert_eq!(old_file_result, "3");
+        assert_eq!(old_file_result, succeed(bkt(dir.path("cache")).args(args)));
     }
 
     #[test]

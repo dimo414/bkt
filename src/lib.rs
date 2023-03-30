@@ -37,6 +37,23 @@ macro_rules! debug_msg {
     ($($arg:tt)*) => {  }
 }
 
+/// Returns the modtime of the given path. Returns Ok(None) if the file is not found, and
+/// otherwise returns an error if the modtime cannot be determined.
+fn modtime(path: &Path) -> Result<Option<SystemTime>> {
+    let metadata = std::fs::metadata(path);
+    match metadata {
+        Ok(metadata) => {
+            Ok(Some(metadata.modified().context("Modtime is not supported")?))
+        },
+        Err(ref err) => {
+            match err.kind() {
+                ErrorKind::NotFound => Ok(None),
+                _ => { metadata?; unreachable!() },
+            }
+        }
+    }
+}
+
 /// A stateless description of a command to be executed and cached. It consists of a command line
 /// invocation and additional metadata about how the command should be cached which are configured
 /// via the `with_*` methods. Instances can be persisted and reused.
@@ -58,6 +75,7 @@ pub struct CommandDesc {
     args: Vec<OsString>,
     use_cwd: bool,
     envs: BTreeSet<OsString>,
+    mod_files: BTreeSet<PathBuf>,
     persist_failures: bool,
 }
 
@@ -72,6 +90,7 @@ impl CommandDesc {
             args: command.into_iter().map(Into::into).collect(),
             use_cwd: false,
             envs: BTreeSet::new(),
+            mod_files: BTreeSet::new(),
             persist_failures: true,
         };
         assert!(!ret.args.is_empty(), "Command cannot be empty");
@@ -99,8 +118,8 @@ impl CommandDesc {
     /// consistency with subprocesses that don't read this environment variable.
     ///
     /// Note: If the given variable name is not found in the current process' environment at
-    /// execution time the variable is _not_ included in the cache key, and it will be cached as if
-    /// the environment variable had not been specified at all.
+    /// execution time the variable is _not_ included in the cache key, and the execution will be
+    /// cached as if the environment variable had not been specified at all.
     ///
     /// [`with_cwd()`]: CommandDesc::with_cwd
     ///
@@ -121,8 +140,8 @@ impl CommandDesc {
     /// consistency with subprocesses that don't read this environment variable.
     ///
     /// Note: If a given variable name is not found in the current process' environment at execution
-    /// time that variable is _not_ included in the cache key, and it will be cached as if the
-    /// environment variable had not been specified at all.
+    /// time that variable is _not_ included in the cache key, and the execution will be cached as
+    /// if the environment variable had not been specified at all.
     ///
     /// [`with_cwd()`]: CommandDesc::with_cwd
     ///
@@ -136,6 +155,56 @@ impl CommandDesc {
         E: AsRef<OsStr>,
     {
         self.envs.extend(envs.into_iter().map(|e| e.as_ref().into()));
+        self
+    }
+
+    /// Specifies that the modification time of the given file should be included in the cache key,
+    /// causing cached commands to be invalidated if the file is modified in the future. Commands
+    /// that depend on the contents of certain files should call this in order to invalidate the
+    /// cache when the file changes.
+    ///
+    /// It is recommended to pass absolute paths when this is used along with [`with_cwd()`] or
+    /// [`CommandState::with_working_dir()`] to avoid any ambiguity in how relative paths are
+    /// resolved.
+    ///
+    /// Note: If the given path is not found at execution time the file is _not_ included in the
+    /// cache key, and the execution will be cached as if the file had not been specified at all.
+    ///
+    /// [`with_cwd()`]: CommandDesc::with_cwd
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cmd = bkt::CommandDesc::new(["..."]).with_modtime("/etc/passwd");
+    /// ```
+    pub fn with_modtime<P>(mut self, file: P) -> Self where P: AsRef<Path> {
+        self.mod_files.insert(file.as_ref().into());
+        self
+    }
+
+    /// Specifies that the modification time of the given files should be included in the cache key,
+    /// causing cached commands to be invalidated if the files are modified in the future. Commands
+    /// that depend on the contents of certain files should call this in order to invalidate the
+    /// cache when the files change.
+    ///
+    /// It is recommended to pass absolute paths when this is used along with [`with_cwd()`] or
+    /// [`CommandState::with_working_dir()`] to avoid any ambiguity in how relative paths are
+    /// resolved.
+    ///
+    /// Note: If a given path is not found at execution time that file is _not_ included in the
+    /// cache key, and the execution will be cached as if the file had not been specified at all.
+    ///
+    /// [`with_cwd()`]: CommandDesc::with_cwd
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cmd = bkt::CommandDesc::new(["..."]).with_modtimes(["/etc/passwd", "/etc/group"]);
+    /// ```
+    pub fn with_modtimes<I, P>(mut self, files: I) -> Self where
+        I: IntoIterator<Item=P>,
+        P: AsRef<Path>, {
+        self.mod_files.extend(files.into_iter().map(|f| f.as_ref().into()));
         self
     }
 
@@ -184,8 +253,15 @@ impl CommandDesc {
         let envs = self.envs.iter()
             .flat_map(|e| std::env::var_os(e).map(|v| (e.clone(), v)))
             .collect();
+        let modtimes = self.mod_files.iter()
+            .map(|f|  modtime(f).map(|m| (f, m)))
+            .collect::<Result<Vec<_>>>()?.into_iter()
+            .flat_map(|(f, m)| m.map(|m| (f.clone(), m)))
+            .collect();
 
-        Ok(CommandState { args: self.args.clone(), cwd, envs, persist_failures: self.persist_failures })
+        let state = CommandState { args: self.args.clone(), cwd, envs, modtimes, persist_failures: self.persist_failures };
+        debug_msg!("state: {}", state.debug_info());
+        Ok(state)
     }
 }
 
@@ -215,6 +291,7 @@ pub struct CommandState {
     args: Vec<OsString>,
     cwd: Option<PathBuf>,
     envs: BTreeMap<OsString, OsString>,
+    modtimes: BTreeMap<PathBuf, SystemTime>,
     persist_failures: bool,
 }
 
@@ -276,6 +353,31 @@ impl CommandState {
             self.envs.insert(key.as_ref().into(), val.as_ref().into());
         }
         self
+    }
+
+    /// Format's the CommandState's metadata (information read from the system rather than provided
+    /// by the caller) for diagnostic purposes.
+    #[cfg(feature="debug")]
+    fn debug_info(&self) -> String {
+        fn to_timestamp(time: &SystemTime) -> u128 {
+            time.duration_since(SystemTime::UNIX_EPOCH).expect("Precedes epoch").as_micros()
+        }
+
+        let mut parts = Vec::new();
+        if let Some(ref cwd) = self.cwd {
+            parts.push(format!("cwd:{}", cwd.to_string_lossy()));
+        }
+        if !self.envs.is_empty() {
+            parts.push(self.envs.iter()
+                           .map(|(k, v)| format!("{}={}", k.to_string_lossy(), v.to_string_lossy()))
+                           .collect::<Vec<_>>().join(","));
+        }
+        if !self.modtimes.is_empty() {
+            parts.push(self.modtimes.iter()
+                .map(|(p, m)| format!("{}:{}", p.to_string_lossy(), to_timestamp(&m)))
+                .collect::<Vec<_>>().join(" "));
+        }
+        parts.join(" | ")
     }
 }
 
@@ -630,7 +732,7 @@ impl Cache {
         assert!(!ttl.is_zero(), "ttl cannot be zero");
         let ttl_dir = self.data_dir().join(Cache::seconds_ceiling(ttl).to_string());
         std::fs::create_dir_all(&ttl_dir)?;
-        std::fs::create_dir_all(&self.key_dir())?;
+        std::fs::create_dir_all(self.key_dir())?;
         let data_path = Cache::rand_filename(&ttl_dir, "data");
         // Note: this will fail if filename collides, could retry in a loop if that happens
         let file = OpenOptions::new().create_new(true).write(true).open(&data_path)?;
@@ -644,10 +746,10 @@ impl Cache {
         // https://github.com/dimo414/bash-cache/issues/26
         let tmp_symlink = Cache::rand_filename(&self.key_dir(), "tmp-symlink");
         // Note: this call will fail if the tmp_symlink filename collides, could retry in a loop if that happens.
-        symlink(&data_path, &tmp_symlink)?;
+        symlink(data_path, &tmp_symlink)?;
         let key_path = self.key_path(&entry.key.cache_key());
-        std::fs::rename(&tmp_symlink, &key_path)?;
         debug_msg!("store key {}", key_path.display());
+        std::fs::rename(&tmp_symlink, key_path)?;
         Ok(())
     }
 
@@ -655,7 +757,7 @@ impl Cache {
         fn delete_stale_file(file: &Path, ttl: Duration) -> Result<()> {
             let age = std::fs::metadata(file)?.modified()?.elapsed()?;
             if age > ttl {
-                std::fs::remove_file(&file)?;
+                std::fs::remove_file(file)?;
             }
             Ok(())
         }
@@ -1146,14 +1248,14 @@ mod bkt_tests {
         // Now the cwd is captured, but overwritten by with_working_dir()
         let state = cmd.capture_state().unwrap().with_working_dir(&wd);
         let (result, _) = bkt.retrieve(state, Duration::from_secs(10)).unwrap();
-        assert_eq!(result.stdout_utf8(), format!("{}\n", wd.to_string_lossy()));
+        assert_eq!(result.stdout_utf8(), format!("{}\n", wd.to_str().unwrap()));
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.exit_code(), 0);
 
         // now change the cwd and see it get captured lazily
         std::env::set_current_dir(&wd).unwrap();
         let (result, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
-        assert_eq!(result.stdout_utf8(), format!("{}\n", wd.to_string_lossy()));
+        assert_eq!(result.stdout_utf8(), format!("{}\n", wd.to_str().unwrap()));
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.exit_code(), 0);
 
@@ -1168,9 +1270,9 @@ mod bkt_tests {
     }
 
     #[test]
-    // TODO the JSON serializer doesn't support OsString keys, CommandDesc needs a custom Serializer
-    //      (for feature="debug", at least) - see https://stackoverflow.com/q/51276896/113632 and
-    //      https://github.com/serde-rs/json/issues/809
+    // TODO the JSON serializer doesn't support OsString keys, CommandState needs a custom
+    //      Serializer (for feature="debug", at least) - see https://stackoverflow.com/q/51276896
+    //      and https://github.com/serde-rs/json/issues/809
     #[cfg(not(feature = "debug"))]
     fn with_env() {
         let dir = TestDir::temp().create("dir", FileType::Dir);
@@ -1181,5 +1283,28 @@ mod bkt_tests {
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.exit_code(), 0);
         assert_eq!(result.stdout_utf8(), "FOO:bar\n");
+    }
+
+    #[test]
+    fn with_modtime() {
+        let dir = TestDir::temp().create("dir", FileType::Dir);
+        let file = dir.path("file");
+        let cmd = CommandDesc::new(["cat", &file.to_str().unwrap()]);
+        let cmd_modtime = cmd.clone().with_modtime(&file);
+        let bkt = Bkt::create(dir.path("cache")).unwrap();
+        write!(File::create(&file).unwrap(), "A").unwrap();
+        let (result_a, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        let (result_mod_a, _) = bkt.retrieve(&cmd_modtime, Duration::from_secs(10)).unwrap();
+
+        // Update the file _and_ reset its modtime because modtime is not consistently updated e.g.
+        // if writes are too close together.
+        write!(File::create(&file).unwrap(), "B").unwrap();
+        filetime::set_file_mtime(&file, filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(15))).unwrap();
+
+        let (result_b, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        let (result_mod_b, _) = bkt.retrieve(&cmd_modtime, Duration::from_secs(10)).unwrap();
+        assert_eq!(result_a.stdout_utf8(), result_b.stdout_utf8()); // cached
+        assert_eq!(result_mod_a.stdout_utf8(), "A");
+        assert_eq!(result_mod_b.stdout_utf8(), "B");
     }
 }

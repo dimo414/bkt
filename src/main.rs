@@ -57,6 +57,11 @@ fn run(cli: Cli) -> Result<i32> {
         command = command.with_envs(&envs);
     }
 
+    let files = cli.modtime.into_iter().flatten().collect::<Vec<_>>();
+    if !files.is_empty() {
+        command = command.with_modtimes(&files);
+    }
+
     if cli.discard_failures {
         command = command.with_discard_failures(true);
     }
@@ -131,6 +136,11 @@ struct Cli {
     /// so that the same command run with different values for the given variables caches separately
     #[clap(long, visible_alias = "use-environment")]
     env: Option<Vec<OsString>>,
+
+    // Includes the last modification time of the given file(s) in the cache key,
+    /// so that the same command run with different modtimes for the given files caches separately
+    #[clap(long, visible_alias = "use_file_modtime", multiple_occurrences=true, use_value_delimiter=false)]
+    modtime: Option<Vec<OsString>>,
 
     /// Don't cache invocations that fail (non-zero exit code).
     /// USE CAUTION when passing this flag, as unexpected failures can lead to a spike in invocations
