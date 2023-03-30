@@ -1,7 +1,7 @@
 mod cli {
     use std::path::Path;
     use std::process::{Command, Stdio};
-    use std::time::{SystemTime, Duration, Instant};
+    use std::time::{SystemTime, Duration};
 
     use anyhow::Result;
     use test_dir::{TestDir, DirBuilder, FileType};
@@ -58,25 +58,29 @@ mod cli {
 
     fn succeed(cmd: &mut Command) -> String {
         let result = run(cmd);
-        if !cfg!(feature="debug") {
+        if cfg!(feature="debug") {
+            if !result.err.is_empty() { eprintln!("stderr:\n{}", result.err); }
+        } else {
             // debug writes to stderr, so don't bother checking it in that mode
-            // TODO annotate any tests that aren't debug-compatible and add CI coverage
+            // TODO annotate any tests that aren't debug-compatible and add CI coverage of debug
             assert_eq!(result.err, "");
         }
         assert_eq!(result.status, Some(0));
         result.out
     }
 
-    fn modtime<P: AsRef<Path>>(path: P) -> SystemTime {
-        std::fs::metadata(path).expect("No metadata").modified().expect("No modtime")
-    }
-
-    fn wait_for_modification(path: &Path, orig_modtime: &SystemTime) {
-        let expired = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < expired {
-            if &modtime(path) != orig_modtime { return; }
+    // Returns once the given file contains different contents than those provided. Panics if the
+    // file does not change after ~5s.
+    //
+    // Note this could return immediately if the file already doesn't contain initial_contents
+    // (e.g. if the given contents were wrong) because such a check could race. Do additional
+    // checks prior to waiting if needed.
+    fn wait_for_contents_to_change<P: AsRef<Path>>(file: P, initial_contents: &str) {
+        for _ in 1..50 {
+            if std::fs::read_to_string(&file).unwrap() != initial_contents { return; }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        panic!("{:?} modtime has not changed", path);
+        panic!("Contents of {} did not change", file.as_ref().to_string_lossy());
     }
 
     fn make_dir_stale<P: AsRef<Path>>(dir: P, age: Duration) -> Result<()> {
@@ -85,7 +89,7 @@ mod cli {
         let stale_time = filetime::FileTime::from_system_time(desired_time);
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();
-            let last_modified = modtime(&path);
+            let last_modified = std::fs::metadata(&path)?.modified()?;
 
             if path.is_file() && last_modified > desired_time {
                 filetime::set_file_mtime(&path, stale_time)?;
@@ -201,12 +205,10 @@ mod cli {
         let args = ["--stale=10s", "--ttl=20s", "--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
         assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "1");
 
-        let last_mod = modtime(&file);
-        std::thread::sleep(Duration::from_secs(1)); // Avoid issues with subsecond modtime precision
         make_dir_stale(dir.path("cache"), Duration::from_secs(15)).unwrap();
         assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "1");
 
-        wait_for_modification(&file, &last_mod);
+        wait_for_contents_to_change(&file, ".");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "..");
         assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "2");
     }
@@ -241,32 +243,29 @@ mod cli {
     }
 
     #[test]
-    #[ignore] // TODO(https://github.com/dimo414/bkt/issues/14)
     fn discard_failures_in_background() {
         let dir = TestDir::temp();
         let file = dir.path("file");
-        let cmd = format!("{} false;", COUNT_INVOCATIONS);
-        let args = ["--ttl=20s", "--", "bash", "-c", &cmd, "arg0", file.to_str().unwrap()];
-        let discard_args = join(&["--discard-failures"], &args);
-        let discard_stale_args = join(&["--stale=10s"], &discard_args);
+        let cmd = format!("{} ! \"${{FAIL:-false}}\";", COUNT_INVOCATIONS);
+        let args = ["--ttl=20s", "--discard-failures", "--", "bash", "-c", &cmd, "arg0", file.to_str().unwrap()];
+        let stale_args = join(&["--stale=10s"], &args);
 
-        // cached
-        assert_eq!(run(bkt(dir.path("cache")).args(args)),
-                   CmdResult { out: "1".into(), err: "".into(), status: Some(1) });
+        // Cache result normally
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "1");
+
+        // Cause cmd to fail and not be cached
+        std::env::set_var("FAIL", "true");
 
         // returns cached result, but attempts to warm in the background
-        let last_mod = modtime(&file);
         make_dir_stale(dir.path("cache"), Duration::from_secs(15)).unwrap();
-        assert_eq!(run(bkt(dir.path("cache")).args(&discard_stale_args)),
-                   CmdResult { out: "1".into(), err: "".into(), status: Some(1) });
-        wait_for_modification(&file, &last_mod);
+        assert_eq!(succeed(bkt(dir.path("cache")).args(&stale_args)), "1");
 
-        // Command ran
+        // Verify command ran
+        wait_for_contents_to_change(&file, ".");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "..");
 
-        // but cache was not updated
-        assert_eq!(run(bkt(dir.path("cache")).args(&discard_args)),
-                   CmdResult { out: "1".into(), err: "".into(), status: Some(1) });
+        // But cached success is still returned
+        assert_eq!(succeed(bkt(dir.path("cache")).args(&args)), "1");
     }
 
     #[test]
