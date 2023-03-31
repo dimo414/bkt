@@ -946,6 +946,25 @@ mod cache_tests {
     }
 }
 
+/// Holds information about the cache status of a given command.
+#[derive(Debug, Copy, Clone)]
+pub enum CacheStatus {
+    /// Command was found in the cache. Contains the time the returned invocation was cached.
+    Hit(Instant),
+    /// Command was not found in the cache and was executed. Contains the execution time of the
+    /// subprocess.
+    Miss(Duration),
+}
+
+#[cfg(test)]
+impl CacheStatus {
+    // Note these functions are intentionally not public for now. They're only currently needed to
+    // make assertions shorter, and should be able to be removed once assert_matches #82775 is
+    // stable. Can be made public if other use-cases arise.
+    fn is_hit(&self) -> bool { match self { CacheStatus::Hit(_) => true, CacheStatus::Miss(_) => false, } }
+    fn is_miss(&self) -> bool { match self { CacheStatus::Hit(_) => false, CacheStatus::Miss(_) => true, } }
+}
+
 /// This struct is the main API entry point for the `bkt` library, allowing callers to invoke and
 /// cache subprocesses for later reuse.
 ///
@@ -1054,33 +1073,35 @@ impl Bkt {
         })
     }
 
-    /// Looks up the given command in Bkt's cache, returning it, and its age, if found and newer
-    /// than the given TTL.
+    /// Looks up the given command in Bkt's cache. If found (and newer than the given TTL) returns
+    /// the cached invocation. If stale or not found the command is executed and the result is
+    /// cached and then returned.
     ///
-    /// If stale or not found the command is executed and the result is cached and then returned.
-    /// A zero-duration age will be returned if this invocation refreshed the cache.
+    /// The second element in the returned tuple reports whether or not the invocation was cached
+    /// and includes information such as the cached data's age or the executed subprocess' runtime.
     ///
     /// # Errors
     ///
     /// If looking up, deserializing, executing, or serializing the command fails. This generally
     /// reflects a user error such as an invalid command.
-    // TODO return a two-variant enum Cached/Refreshed rather than a tuple and a zero-duration
-    pub fn retrieve<T>(&self, command: T, ttl: Duration) -> Result<(Invocation, Duration)> where
+    pub fn retrieve<T>(&self, command: T, ttl: Duration) -> Result<(Invocation, CacheStatus)> where
         T: TryInto<CommandState>,
         anyhow::Error: From<T::Error>, // https://stackoverflow.com/a/72627328
     {
         let command = command.try_into()?;
         let cached = self.cache.lookup(&command, ttl).context("Cache lookup failed")?;
         let result = match cached {
-            Some((cached, mtime)) => (cached, mtime.elapsed()?),
+            Some((cached, mtime)) => (cached, CacheStatus::Hit(Instant::now() - mtime.elapsed()?)),
             None => {
                 let cleanup_hook = self.maybe_cleanup_once();
+                let start = Instant::now();
                 let result = Bkt::execute_subprocess(&command).context("Subprocess execution failed")?;
+                let runtime = Instant::now() - start;
                 if command.persist_failures || result.exit_code == 0 {
                     self.cache.store(&command, &result, ttl).context("Cache write failed")?;
                 }
                 Bkt::join_cleanup_thread(cleanup_hook);
-                (result, Duration::default())
+                (result, CacheStatus::Miss(runtime))
             }
         };
         Ok(result)
@@ -1089,22 +1110,26 @@ impl Bkt {
     /// Unconditionally executes the given command and caches the invocation for the given TTL.
     /// This can be used to "warm" the cache so that subsequent calls to `execute` are fast.
     ///
+    /// The second element in the returned tuple is the subprocess' execution time.
+    ///
     /// # Errors
     ///
     /// If executing or serializing the command fails. This generally reflects a user error such as
     /// an invalid command.
-    pub fn refresh<T>(&self, command: T, ttl: Duration) -> Result<Invocation> where
+    pub fn refresh<T>(&self, command: T, ttl: Duration) -> Result<(Invocation, Duration)> where
         T: TryInto<CommandState>,
         anyhow::Error: From<T::Error>, // https://stackoverflow.com/a/72627328
     {
         let command = command.try_into()?;
         let cleanup_hook = self.maybe_cleanup_once();
+        let start = Instant::now();
         let result = Bkt::execute_subprocess(&command).context("Subprocess execution failed")?;
+        let elapsed = Instant::now() - start;
         if command.persist_failures || result.exit_code == 0 {
             self.cache.store(&command, &result, ttl).context("Cache write failed")?;
         }
         Bkt::join_cleanup_thread(cleanup_hook);
-        Ok(result)
+        Ok((result, elapsed))
     }
 
     /// Clean the cache in the background on a cache-miss; this will usually
@@ -1182,11 +1207,13 @@ mod bkt_tests {
         let cmd = CommandDesc::new(
             ["bash", "-c", r#"echo "$RANDOM" > "${1:?}"; cat "${1:?}""#, "arg0", file.to_str().unwrap()]);
         let bkt = Bkt::create(dir.path("cache")).unwrap();
-        let (first_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        let (first_inv, first_status) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        assert!(first_status.is_miss());
 
         for _ in 1..3 {
-            let (subsequent_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+            let (subsequent_inv, subsequent_status) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
             assert_eq!(first_inv, subsequent_inv);
+            assert!(subsequent_status.is_hit());
         }
     }
 
@@ -1203,24 +1230,28 @@ mod bkt_tests {
 
         write!(File::create(&output).unwrap(), "A").unwrap();
         write!(File::create(&code).unwrap(), "10").unwrap();
-        let (first_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        let (first_inv, first_status) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(first_inv.exit_code, 10, "{:?}\nstderr:{}", first_inv, first_inv.stderr_utf8());
         assert_eq!(first_inv.stdout_utf8(), "A");
+        assert!(first_status.is_miss());
 
         write!(File::create(&output).unwrap(), "B").unwrap();
-        let (subsequent_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        let (subsequent_inv, subsequent_status) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
         // call is not cached
         assert_eq!(subsequent_inv.stdout_utf8(), "B");
+        assert!(subsequent_status.is_miss());
 
         write!(File::create(&output).unwrap(), "C").unwrap();
         write!(File::create(&code).unwrap(), "0").unwrap();
-        let (success_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        let (success_inv, success_status) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(success_inv.exit_code, 0);
         assert_eq!(success_inv.stdout_utf8(), "C");
+        assert!(success_status.is_miss());
 
         write!(File::create(&output).unwrap(), "D").unwrap();
-        let (cached_inv, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        let (cached_inv, cached_status) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(success_inv, cached_inv);
+        assert!(cached_status.is_hit());
     }
 
     #[test]
@@ -1230,10 +1261,11 @@ mod bkt_tests {
         let cmd = CommandDesc::new(["bash", "-c", "echo Hello World > file"]);
         let state = cmd.capture_state().unwrap().with_working_dir(&work_dir);
         let bkt = Bkt::create(dir.path("cache")).unwrap();
-        let (result, _) = bkt.retrieve(state, Duration::from_secs(10)).unwrap();
+        let (result, status) = bkt.retrieve(state, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.exit_code(), 0);
         assert_eq!(std::fs::read_to_string(work_dir.join("file")).unwrap(), "Hello World\n");
+        assert!(status.is_miss());
     }
 
     #[test]
@@ -1247,17 +1279,19 @@ mod bkt_tests {
         let cmd = CommandDesc::new(["bash", "-c", "pwd; echo '.' > file"]).with_cwd();
         // Now the cwd is captured, but overwritten by with_working_dir()
         let state = cmd.capture_state().unwrap().with_working_dir(&wd);
-        let (result, _) = bkt.retrieve(state, Duration::from_secs(10)).unwrap();
+        let (result, status) = bkt.retrieve(state, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stdout_utf8(), format!("{}\n", wd.to_str().unwrap()));
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.exit_code(), 0);
+        assert!(status.is_miss());
 
         // now change the cwd and see it get captured lazily
         std::env::set_current_dir(&wd).unwrap();
-        let (result, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        let (result, status) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stdout_utf8(), format!("{}\n", wd.to_str().unwrap()));
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.exit_code(), 0);
+        assert!(status.is_hit());
 
         // and the file was only written to once, hence the cache was shared
         assert_eq!(std::fs::read_to_string(wd.join("file")).unwrap(), ".\n");
@@ -1279,10 +1313,11 @@ mod bkt_tests {
         let cmd = CommandDesc::new(["bash", "-c", r#"echo "FOO:${FOO:?}""#]).capture_state().unwrap()
             .with_env("FOO", "bar");
         let bkt = Bkt::create(dir.path("cache")).unwrap();
-        let (result, _) = bkt.retrieve(cmd, Duration::from_secs(10)).unwrap();
+        let (result, status) = bkt.retrieve(cmd, Duration::from_secs(10)).unwrap();
         assert_eq!(result.stderr_utf8(), "");
         assert_eq!(result.exit_code(), 0);
         assert_eq!(result.stdout_utf8(), "FOO:bar\n");
+        assert!(status.is_miss());
     }
 
     #[test]
@@ -1293,18 +1328,22 @@ mod bkt_tests {
         let cmd_modtime = cmd.clone().with_modtime(&file);
         let bkt = Bkt::create(dir.path("cache")).unwrap();
         write!(File::create(&file).unwrap(), "A").unwrap();
-        let (result_a, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
-        let (result_mod_a, _) = bkt.retrieve(&cmd_modtime, Duration::from_secs(10)).unwrap();
+        let (result_a, status_a) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        let (result_mod_a, status_mod_a) = bkt.retrieve(&cmd_modtime, Duration::from_secs(10)).unwrap();
+        assert!(status_a.is_miss());
+        assert!(status_mod_a.is_miss());
 
         // Update the file _and_ reset its modtime because modtime is not consistently updated e.g.
         // if writes are too close together.
         write!(File::create(&file).unwrap(), "B").unwrap();
         filetime::set_file_mtime(&file, filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(15))).unwrap();
 
-        let (result_b, _) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
-        let (result_mod_b, _) = bkt.retrieve(&cmd_modtime, Duration::from_secs(10)).unwrap();
+        let (result_b, status_b) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
+        let (result_mod_b, status_mod_b) = bkt.retrieve(&cmd_modtime, Duration::from_secs(10)).unwrap();
         assert_eq!(result_a.stdout_utf8(), result_b.stdout_utf8()); // cached
+        assert!(status_b.is_hit());
         assert_eq!(result_mod_a.stdout_utf8(), "A");
         assert_eq!(result_mod_b.stdout_utf8(), "B");
+        assert!(status_mod_b.is_miss());
     }
 }

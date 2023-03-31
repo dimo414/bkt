@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, exit, Stdio};
-use std::time::{Duration};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{AppSettings, Parser};
@@ -71,17 +71,19 @@ fn run(cli: Cli) -> Result<i32> {
         return Ok(0);
     }
 
-    let (invocation, age) = if cli.force {
-        (bkt.refresh(&command, ttl)?, Duration::from_secs(0))
+    let invocation = if cli.force {
+        bkt.refresh(&command, ttl)?.0
     } else {
-        bkt.retrieve(&command, ttl)?
-    };
-
-    if let Some(stale) = stale {
-        if age > stale {
-            force_update_async()?;
+        let (invocation, status) = bkt.retrieve(&command, ttl)?;
+        if let Some(stale) = stale {
+            if let bkt::CacheStatus::Hit(cached_at) = status {
+                if (Instant::now() - cached_at) > stale {
+                    force_update_async()?;
+                }
+            }
         }
-    }
+        invocation
+    };
 
     // BrokenPipe errors are uninteresting for command line applications; just stop writing to that
     // descriptor and, if appropriate, exit. Rust doesn't have good support for this presently, see
