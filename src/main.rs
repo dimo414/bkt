@@ -32,9 +32,9 @@ fn run(cli: Cli) -> Result<i32> {
     let ttl: Duration = cli.ttl.into();
     let stale: Option<Duration> = cli.stale.map(Into::into);
 
-    assert!(!ttl.as_secs() > 0 || ttl.subsec_nanos() > 0, "--ttl cannot be zero"); // TODO use is_zero once stable
+    assert!(!ttl.is_zero(), "--ttl cannot be zero");
     if let Some(stale) = stale {
-        assert!(!stale.as_secs() > 0 || stale.subsec_nanos() > 0, "--stale cannot be zero"); // TODO use is_zero once stable
+        assert!(!stale.is_zero(), "--stale cannot be zero");
         assert!(stale < ttl, "--stale must be less than --ttl");
     }
 
