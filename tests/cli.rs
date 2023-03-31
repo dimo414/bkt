@@ -116,7 +116,7 @@ mod cli {
     fn help() {
         let dir = TestDir::temp();
         let out = succeed(bkt(dir.path("cache")).arg("--help"));
-        assert!(out.contains("bkt [OPTIONS] [--] <COMMAND>..."));
+        assert!(out.contains("bkt [OPTIONS] -- <COMMAND>..."));
     }
 
     #[test]
