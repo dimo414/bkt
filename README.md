@@ -37,7 +37,7 @@ Package manager support is being tracked
 ## Usage
 
 ```
-bkt [--ttl=DURATION] [--stale=DURATION] [--cwd] [--env=ENV ...] [--scope=SCOPE] [--discard-failures] [--warm|--force] -- <command>...
+bkt [--ttl=DURATION] [--stale=DURATION] [--cwd] [--env=ENV ...] [--modtime=FILE ...] [--scope=SCOPE] [--discard-failures] [--warm|--force] -- <command>...
 ```
 
 The easiest way to use `bkt` is to simply prefix the command you intend to
@@ -69,9 +69,9 @@ data is considered valid. The default TTL can be overriden by defining a
 
 When the data expires `bkt` has to re-execute the command synchronously, which
 can introduce unexpected slowness. To avoid this, pass `--stale` with a shorter
-duration than the TTL. This causes `bkt` to refresh the cache in the background
-when the cached data is older than the stale threshold while still returning
-the old data promptly.
+duration than the TTL. When the cached data is older than the stale threshold
+this causes `bkt` to refresh the cache in the background while still promptly
+returning the cached data.
 
 Both flags (and `BKT_TTL`) accept duration strings such as `10s` or
 `1hour 30min`. The exact syntax is defined in the
@@ -81,7 +81,11 @@ library.
 ### Execution Environment
 
 Some commands' behavior depends on more than just the command line arguments.
-It's possible to constrain the cache so that these invocations are not conflated.
+It's possible to adjust how `bkt` caches such commands so that unrelated
+invocations are cached separately.
+
+#### Working Directory
+
 For example, attempting to cache `pwd` will not work as expected by default:
 
 ```shell
@@ -108,10 +112,19 @@ $ bkt --cwd -- pwd
 /tmp/bar
 ```
 
-Similarly, to include one or more environment variables in the cache key pass
-`--env`, such as `--env=TMPDIR` or `--env=LANG,TERM`. The flag can also be
-passed multiple times. Invocations with different values for any of the given
-variables will be cached separately.
+#### Environment Variables
+
+Similarly, to specify one or more environment variables as relevant for the
+command being cached use `--env`, such as `--env=LANG`. This flag can be
+provided multiple times to key off additional variables. Invocations with
+different values for any of the given variables will be cached separately.
+
+#### File Modifications
+
+It is also possible to have `bkt` check the last-modified time of one or more
+files and include this in the cache key using `--modtime`. For instance passing
+`--modtime=/etc/passwd` would cause the backing command to be re-executed any
+time `/etc/passwd` is modified.
 
 ### Refreshing Manually
 
