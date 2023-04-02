@@ -62,7 +62,6 @@ mod cli {
             if !result.err.is_empty() { eprintln!("stderr:\n{}", result.err); }
         } else {
             // debug writes to stderr, so don't bother checking it in that mode
-            // TODO annotate any tests that aren't debug-compatible and add CI coverage of debug
             assert_eq!(result.err, "");
         }
         assert_eq!(result.status, Some(0));
@@ -128,7 +127,12 @@ mod cli {
 
         for _ in 1..3 {
             let subsequent_result = run(bkt(dir.path("cache")).args(args));
-            assert_eq!(first_result, subsequent_result);
+            if cfg!(feature="debug") {
+                assert_eq!(first_result.status, subsequent_result.status);
+                assert_eq!(first_result.out, subsequent_result.out);
+            } else {
+                assert_eq!(first_result, subsequent_result);
+            }
         }
     }
 
@@ -220,11 +224,14 @@ mod cli {
         let cmd = format!("{} false;", COUNT_INVOCATIONS);
         let args = ["--discard-failures", "--", "bash", "-c", &cmd, "arg0", file.to_str().unwrap()];
 
-        assert_eq!(run(bkt(dir.path("cache")).args(args)),
-                   CmdResult { out: "1".into(), err: "".into(), status: Some(1) });
+        let result = run(bkt(dir.path("cache")).args(args));
+        assert_eq!(result.out, "1");
+        assert_eq!(result.status, Some(1));
+
         // Not cached
-        assert_eq!(run(bkt(dir.path("cache")).args(args)),
-                   CmdResult { out: "2".into(), err: "".into(), status: Some(1) });
+        let result = run(bkt(dir.path("cache")).args(args));
+        assert_eq!(result.out, "2");
+        assert_eq!(result.status, Some(1));
     }
 
     #[test]
@@ -406,6 +413,7 @@ mod cli {
     }
 
     #[test]
+    #[cfg(not(feature="debug"))]
     fn no_debug_output() {
         let dir = TestDir::temp();
         let args = ["--", "bash", "-c", "true"];
@@ -416,6 +424,27 @@ mod cli {
         // Cached
         assert_eq!(run(bkt(dir.path("cache")).args(args)),
                    CmdResult { out: "".into(), err: "".into(), status: Some(0) });
+    }
+
+    #[test]
+    #[cfg(feature="debug")]
+    fn debug_output() {
+        fn starts_with_bkt(s: &str) -> bool { s.lines().all(|l| l.starts_with("bkt: ")) }
+
+        let miss_debug_re = regex::Regex::new(
+            "bkt: state: \nbkt: lookup .* not found\nbkt: cleanup data .*\nbkt: cleanup keys .*\nbkt: store data .*\nbkt: store key .*\n").unwrap();
+        let hit_debug_re = regex::Regex::new("bkt: lookup .* found\n").unwrap();
+
+        let dir = TestDir::temp();
+        let args = ["--", "bash", "-c", PRINT_ARGS, "arg0"];
+
+        let miss = run(bkt(dir.path("cache")).args(args));
+        assert!(starts_with_bkt(&miss.err), "{}", miss.err);
+        assert!(miss_debug_re.is_match(&miss.err), "{}", miss.err);
+
+        let hit = run(bkt(dir.path("cache")).args(args));
+        assert!(starts_with_bkt(&hit.err), "{}", hit.err);
+        assert!(hit_debug_re.is_match(&hit.err), "{}", hit.err);
     }
 
     #[test]
@@ -437,6 +466,7 @@ mod cli {
     }
 
     #[test]
+    #[cfg(not(feature="debug"))]
     fn sensitive_output() {
         let dir = TestDir::temp();
         let args = ["--", "bash", "-c", r"printf 'foo\0bar'; printf 'bar\0baz\n' >&2"];
@@ -515,10 +545,10 @@ mod cli {
         let proc1 = bkt(dir.path("cache")).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let proc2 = bkt(dir.path("cache")).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let result1: CmdResult = proc1.wait_with_output().unwrap().into();
-        assert_eq!(result1.err, "");
+        if !cfg!(feature="debug") { assert_eq!(result1.err, ""); }
         assert_eq!(result1.status, Some(0));
         let result2: CmdResult = proc2.wait_with_output().unwrap().into();
-        assert_eq!(result2.err, "");
+        if !cfg!(feature="debug") { assert_eq!(result2.err, ""); }
         assert_eq!(result2.status, Some(0));
 
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "..");

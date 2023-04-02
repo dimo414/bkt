@@ -24,6 +24,8 @@ jobs:
       run: cargo doc --no-deps --document-private-items
     - name: Tests
       run: cargo test --verbose
+    - name: Tests (features=debug)
+      run: cargo test --verbose --features debug
     - name: Benchmark
       run: |
         cargo build --release

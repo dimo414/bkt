@@ -36,4 +36,5 @@ version = "1.0"
 
 [dev-dependencies]
 filetime = "0.2"
+regex = "1.7"
 test_dir = "0.2"
