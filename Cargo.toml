@@ -2,7 +2,7 @@
 name = "bkt"
 # When updating the version number tag the commit in git
 # https://rust-lang.github.io/api-guidelines/documentation.html#release-notes-document-all-significant-changes-c-relnotes
-version = "0.6.0"
+version = "0.6.1"
 authors = ["Michael Diamond <dimo414@gmail.com>"]
 description = "CLI and Rust library for caching subprocess invocations"
 repository = "http://github.com/dimo414/bkt"
@@ -25,10 +25,14 @@ debug = ['serde_json']
 [dependencies]
 anyhow = "1.0"
 bincode = "1.3.1"
-clap = { version = "4.2", default-features = false, features = ["std", "help", "usage", "error-context", "derive", "env"] }
 humantime = "2.1.0"
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
+
+[dependencies.clap]
+version = "4.2"
+default-features = false
+features = ["derive", "env", "error-context", "help", "std", "usage", "wrap_help"]
 
 [dependencies.serde_json]
 optional = true
