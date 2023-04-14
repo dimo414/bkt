@@ -242,6 +242,10 @@ even if you leave `fzf` running for a while the cache remains warm and is
 refreshed in the background. You may also want to set a `--scope` if it's
 important to invalidate the cache on subsequent invocations.
 
+See [this discussion](https://github.com/dimo414/bkt/discussions/29) for a more
+complete example of using `bkt` with `fzf`, including warming the commands before
+the user starts navigating the selector.
+
 Note: one downside to using `bkt` is, currently, `bkt` doesn't
 [stream](https://github.com/junegunn/fzf/pull/2215) the backing process' output.
 This means when `bkt` has a cache miss the preview will be absent until the
