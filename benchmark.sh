@@ -24,10 +24,10 @@ time_quiet() {
 avg_floats() {
   # Maybe this whole script should just be written in Python...
   # Or even just implement a --benchmark flag in main.rs?
-  python <(cat <<EOF
+  python3 <(cat <<EOF
 import sys
 total = sum((float(arg) for arg in sys.argv[1:]))
-print("{:.4f}".format(total/(len(sys.argv)-1)))
+print("{:.5f}".format(total/(len(sys.argv)-1)))
 EOF
     ) "$@"
 }
