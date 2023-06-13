@@ -8,7 +8,7 @@
 //! # fn main() -> anyhow::Result<()> {
 //! # use std::time::Duration;
 //! let bkt = bkt::Bkt::in_tmp()?;
-//! let expensive_cmd = bkt::CommandDesc::new(["wget", "http://example.com"]);
+//! let expensive_cmd = bkt::CommandDesc::new(["wget", "https://example.com"]);
 //! let (result, age) = bkt.retrieve(&expensive_cmd, Duration::from_secs(3600))?;
 //! do_something(result.stdout_utf8());
 //! # Ok(()) }
@@ -974,7 +974,7 @@ impl CacheStatus {
 /// # fn main() -> anyhow::Result<()> {
 /// # use std::time::Duration;
 /// let bkt = bkt::Bkt::in_tmp()?;
-/// let cmd = bkt::CommandDesc::new(["curl", "http://expensive.api/foo"]);
+/// let cmd = bkt::CommandDesc::new(["curl", "https://expensive.api/foo"]);
 /// let (result, age) = bkt.retrieve(&cmd, Duration::from_secs(60*60))?;
 /// println!("Retrieved: {:?}\nAge: {:?}", result, age);
 /// # Ok(()) }
