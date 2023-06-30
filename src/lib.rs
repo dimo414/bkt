@@ -1061,8 +1061,7 @@ impl Bkt {
         // TODO write to stdout/stderr while running, rather than after the process completes?
         // See https://stackoverflow.com/q/66060139
         let result = command.output()
-            .with_context(|| format!("Failed to run command {}",
-                                     command.get_args().next().expect("Executable missing").to_string_lossy()))?;
+            .with_context(|| format!("Failed to run command: {:?}", command))?;
         let runtime = start.elapsed();
         Ok(Invocation {
             stdout: result.stdout,
