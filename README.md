@@ -259,7 +259,7 @@ can cleanly invoke `bkt` if available without complicating your users' workflow.
 Of course if they choose to install `bkt` they'll get a faster script as a
 result!
 
-```
+```shell
 # Cache commands using bkt if installed
 if command -v bkt >&/dev/null; then
   bkt() { command bkt "$@"; }
