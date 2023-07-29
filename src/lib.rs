@@ -693,8 +693,11 @@ impl Cache {
         let elapsed = mtime.elapsed();
         if elapsed.is_err() || elapsed.unwrap() > max_age {
             debug_msg!("lookup {} expired", path.display());
-            std::fs::remove_file(&path).context("Failed to remove expired data")?;
-            return Ok(None);
+            return match std::fs::remove_file(&path) {
+                Ok(_) => Ok(None),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e)
+            }.context("Failed to remove expired data")
         }
         // Ignore false-positive hits that happened to collide with the hash code
         if &found.key != key {
