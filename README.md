@@ -64,7 +64,7 @@ Two flags, `--ttl` and `--stale`, configure how long cached data is preserved.
 By default `bkt` uses a TTL (Time to Live) of 60 seconds, meaning cached
 data older than sixty seconds will be discarded and the backing command re-run.
 Passing a different value, such as `--ttl=1d`, will change how long the cached
-data is considered valid. The default TTL can be overriden by defining a
+data is considered valid. The default TTL can be overridden by defining a
 `BKT_TTL` environment variable.
 
 When the data expires `bkt` has to re-execute the command synchronously, which
@@ -245,11 +245,6 @@ important to invalidate the cache on subsequent invocations.
 See [this discussion](https://github.com/dimo414/bkt/discussions/29) for a more
 complete example of using `bkt` with `fzf`, including warming the commands before
 the user starts navigating the selector.
-
-Note: one downside to using `bkt` is, currently, `bkt` doesn't
-[stream](https://github.com/junegunn/fzf/pull/2215) the backing process' output.
-This means when `bkt` has a cache miss the preview will be absent until the
-process completes, even if partial output could be displayed sooner.
 
 ### Using `bkt` only if installed
 
