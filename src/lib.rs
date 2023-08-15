@@ -693,8 +693,11 @@ impl Cache {
         let elapsed = mtime.elapsed();
         if elapsed.is_err() || elapsed.unwrap() > max_age {
             debug_msg!("lookup {} expired", path.display());
-            std::fs::remove_file(&path).context("Failed to remove expired data")?;
-            return Ok(None);
+            return match std::fs::remove_file(&path) {
+                Ok(_) => Ok(None),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e)
+            }.context("Failed to remove expired data")
         }
         // Ignore false-positive hits that happened to collide with the hash code
         if &found.key != key {
@@ -1095,8 +1098,7 @@ impl Bkt {
         let command = command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         let start = Instant::now();
-        let mut child = command.spawn().with_context(|| format!(
-            "Failed to run command {}", command.get_args().next().expect("Executable missing").to_string_lossy()))?;
+        let mut child = command.spawn().with_context(|| format!("Failed to run command: {:?}", command))?;
 
         let child_out = child.stdout.take().ok_or(anyhow!("cannot attach to child stdout"))?;
         let child_err = child.stderr.take().ok_or(anyhow!("cannot attach to child stderr"))?;
