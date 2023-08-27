@@ -464,6 +464,35 @@ mod cli {
     }
 
     #[test]
+    fn truncated_output() {
+        let dir = TestDir::temp();
+        let bytes = 1024*100; // 100KB is larger than the standard OS process buffer
+        // Write a large amount of data to stdout and close the process' stream without reading it;
+        // this should be supported silently, see https://github.com/dimo414/bkt/issues/44.
+        let script = format!(r#"printf '.%.0s' {{1..{0}}}"#, bytes);
+        let args = ["--", "bash", "-c", &script, "arg0"];
+        let mut cmd = bkt(dir.path("cache"));
+        let cmd = cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().unwrap();
+        // Read the beginning of stdout
+        // It's not strictly necessary to do this, in fact closing the stream without reading
+        // anything causes the error even for small outputs, but this seems like the more
+        // "interesting" case and it covers the read-nothing behavior too.
+        let mut buf = [0; 10];
+        child.stdout.as_mut().unwrap().read_exact(&mut buf).unwrap();
+        assert_eq!(buf, ['.' as u8; 10]);
+
+        std::mem::drop(child.stdout.take().unwrap()); // close stdout without reading further
+
+        let result: CmdResult = child.wait_with_output().unwrap().into();
+        assert_eq!(result.out, "");
+        // Unexpected error messages will show up in stderr
+        if !cfg!(feature="debug") { assert_eq!(result.err, ""); }
+        assert_eq!(result.status, Some(0));
+    }
+
+    #[test]
     #[cfg(not(feature="debug"))]
     fn no_debug_output() {
         let dir = TestDir::temp();

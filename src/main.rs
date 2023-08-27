@@ -24,6 +24,21 @@ impl Write for DisregardBrokenPipe {
         }
     }
 
+    // Custom implementation of write_all() that treats Ok(0) as success rather than an error as the
+    // default implementation does.
+    // TODO perhaps this should be inlined into maybe_tee() instead of calling write_all()
+    fn write_all(&mut self, mut buf: &[u8]) -> io::Result<()> {
+        while !buf.is_empty() {
+            match self.write(buf) {
+                Ok(0) => return Ok(()),
+                Ok(n) => buf = &buf[n..],
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {},
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         match self.0.flush() {
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
