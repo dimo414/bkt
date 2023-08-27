@@ -6,6 +6,7 @@ mod cli {
     use anyhow::Result;
     use test_dir::{TestDir, DirBuilder, FileType};
     use std::fs::File;
+    use std::io::Read;
 
     // Bash scripts to pass to -c.
     // Avoid depending on external programs.
@@ -410,6 +411,56 @@ mod cli {
         let old_file_result = succeed(bkt(dir.path("cache")).args(args));
         assert_eq!(old_file_result, "3");
         assert_eq!(old_file_result, succeed(bkt(dir.path("cache")).args(args)));
+    }
+
+    #[test]
+    fn streaming() {
+        let dir = TestDir::temp();
+        let file = dir.path("file");
+        let script = r#"echo BEFORE; for (( i=0; i<50; i++ )); do if [[ -e "$1" ]]; then echo AFTER; exit 0; fi; sleep .1; done; exit 10"#;
+        let args = ["--", "bash", "-c", script, "arg0", file.to_str().unwrap()];
+        let mut proc = bkt(dir.path("cache")).args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()).spawn().unwrap();
+
+        // partial output is observable before the process exits
+        let mut buf = [0; 64];
+        let mut stdout = proc.stdout.take().unwrap();
+        let len = stdout.read(&mut buf).unwrap();
+        assert_eq!("BEFORE\n".as_bytes(), &buf[0..len], "len:{} - {:?}", len, buf);
+        assert_eq!(proc.try_wait().unwrap(), None); // process is still running
+
+        File::create(&file).unwrap(); // allow the bash process to terminate
+        let len = stdout.read(&mut buf).unwrap();
+        assert_eq!("AFTER\n".as_bytes(), &buf[0..len], "len:{} - {:?}", len, buf);
+
+        if !cfg!(feature="debug") {
+            let mut buf = String::new();
+            assert_eq!(proc.stderr.as_mut().unwrap().read_to_string(&mut buf).unwrap(), 0, "{}", buf);
+            assert_eq!(buf, "");
+        }
+        assert_eq!(proc.wait().unwrap().code(), Some(0));
+
+        // Command is cached and can be re-run without blocking
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "BEFORE\nAFTER\n");
+    }
+
+    #[test]
+    fn large_output() {
+        let dir = TestDir::temp();
+        let bytes = 1024*100; // 100KB is larger than the standard OS process buffer
+        // Write a large amount of data to stdout and stderr; an incorrect implementation reads
+        // each stream sequentially which will hang on sufficiently large streams as the subprocess
+        // waits for the reader to catch up.
+        let script = format!(r#"printf '.%.0s' {{1..{0}}}; printf '.%.0s' {{1..{0}}} >&2"#, bytes);
+        let args = ["--", "bash", "-c", &script, "arg0"];
+        let result = run(bkt(dir.path("cache")).args(args));
+        assert_eq!(result.out.len(), bytes);
+        if !cfg!(feature="debug") {
+            assert_eq!(result.err.len(), bytes);
+        }
+        assert_eq!(result.status, Some(0));
     }
 
     #[test]

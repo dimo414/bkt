@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{self, stderr, stdout, Write};
 use std::path::PathBuf;
 use std::process::{Command, exit, Stdio};
 use std::time::{Duration, Instant};
@@ -8,6 +8,29 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use bkt::{CommandDesc, Bkt};
+
+// BrokenPipe errors are uninteresting for command line applications; just stop writing to that
+// descriptor and, if appropriate, exit. Rust doesn't have good support for this presently, see
+// https://github.com/rust-lang/rust/issues/46016
+// TODO consider moving this into the Bkt library, either as a pub class or an implementation detail
+//      of Bkt, so that library callers don't need to deal with BrokenPipe either.
+struct DisregardBrokenPipe(Box<dyn Write+Send>);
+
+impl Write for DisregardBrokenPipe {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self.0.write(buf) {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(0),
+            r => r,
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self.0.flush() {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+            r => r,
+        }
+    }
+}
 
 // Re-invokes bkt with --force and then discards the subprocess, causing the cache
 // to be refreshed asynchronously.
@@ -72,9 +95,11 @@ fn run(cli: Cli) -> Result<i32> {
     }
 
     let invocation = if cli.force {
-        bkt.refresh(&command, ttl)?.0
+        bkt.refresh_streaming(&command, ttl, DisregardBrokenPipe(
+            Box::new(stdout())), DisregardBrokenPipe(Box::new(stderr())))?.0
     } else {
-        let (invocation, status) = bkt.retrieve(&command, ttl)?;
+        let (invocation, status) = bkt.retrieve_streaming(
+            &command, ttl, DisregardBrokenPipe(Box::new(stdout())), DisregardBrokenPipe(Box::new(stderr())))?;
         if let Some(stale) = stale {
             if let bkt::CacheStatus::Hit(cached_at) = status {
                 if (Instant::now() - cached_at) > stale {
@@ -85,23 +110,6 @@ fn run(cli: Cli) -> Result<i32> {
         invocation
     };
 
-    // BrokenPipe errors are uninteresting for command line applications; just stop writing to that
-    // descriptor and, if appropriate, exit. Rust doesn't have good support for this presently, see
-    // https://github.com/rust-lang/rust/issues/46016
-    fn disregard_broken_pipe(result: std::io::Result<()>) -> std::io::Result<()> {
-        use std::io::ErrorKind::*;
-        if let Err(e) = &result {
-            if let BrokenPipe = e.kind() {
-                return Ok(());
-            }
-        }
-        result
-    }
-
-    disregard_broken_pipe(io::stdout().write_all(invocation.stdout()))
-        .context("error writing to stdout")?;
-    disregard_broken_pipe(io::stderr().write_all(invocation.stderr()))
-        .context("error writing to stderr")?;
     Ok(invocation.exit_code())
 }
 
