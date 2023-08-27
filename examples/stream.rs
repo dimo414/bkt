@@ -36,7 +36,7 @@ fn stream(
 }
 
 fn main() {
-    let mut child = Command::new("bash").args(&["-c", BASH_CMD])
+    let mut child = Command::new("bash").args(["-c", BASH_CMD])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
