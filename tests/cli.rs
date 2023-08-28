@@ -481,7 +481,7 @@ mod cli {
         // "interesting" case and it covers the read-nothing behavior too.
         let mut buf = [0; 10];
         child.stdout.as_mut().unwrap().read_exact(&mut buf).unwrap();
-        assert_eq!(buf, ['.' as u8; 10]);
+        assert_eq!(buf, [b'.'; 10]);
 
         std::mem::drop(child.stdout.take().unwrap()); // close stdout without reading further
 
