@@ -32,7 +32,7 @@ additional platforms.
 Package manager support is being tracked
 [here](https://github.com/dimo414/bkt/issues/12); volunteers are welcome.
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/bkt.svg)](https://repology.org/project/bkt/versions)
+[![Packaging status](https://repology.org/badge/vertical-allrepos/bkt.svg?columns=3)](https://repology.org/project/bkt/versions)
 
 ## Usage
 
