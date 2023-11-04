@@ -867,6 +867,7 @@ mod cache_tests {
 
     // Sanity-checking that cache_key's behavior is stable over time. This test may need to be
     // updated when changing Rust versions / editions.
+    #[cfg(target_endian = "little")]
     #[test]
     fn stable_hash() {
         assert_eq!(100.cache_key(), "7D208C81E8236995");
