@@ -867,6 +867,7 @@ mod cache_tests {
 
     // Sanity-checking that cache_key's behavior is stable over time. This test may need to be
     // updated when changing Rust versions / editions.
+    // Disabled on hardware that generates other hashes, see #39
     #[cfg(target_endian = "little")]
     #[test]
     fn stable_hash() {
