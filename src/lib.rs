@@ -28,6 +28,9 @@ use anyhow::{anyhow, Context, Error, Result};
 use serde::{Serialize, Deserialize};
 use serde::de::DeserializeOwned;
 
+use base64::{Engine as _, engine::general_purpose};
+
+
 #[cfg(feature="debug")]
 macro_rules! debug_msg {
     ($($arg:tt)*) => { eprintln!("bkt: {}", format!($($arg)*)) }
@@ -661,7 +664,7 @@ impl Cache {
 
     fn key_path(&self, key: &str) -> PathBuf {
         let file = match &self.scope {
-            Some(scope) => format!("{}.{}", scope, key),
+            Some(scope) => format!("{}.{}", general_purpose::STANDARD_NO_PAD.encode(scope), key),
             None => key.into(),
         };
         self.key_dir().join(file)
