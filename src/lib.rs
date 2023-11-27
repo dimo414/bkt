@@ -932,6 +932,24 @@ mod cache_tests {
     }
 
     #[test]
+    fn scoped_fails_without_base64() {
+        let dir = TestDir::temp();
+        let key = "foo".to_string();
+        let val_a = "A".to_string();
+        let val_b = "B".to_string();
+        let cache = Cache::new(dir.root());
+        let cache_scoped = Cache::new(dir.root()).scoped("/scope/with/path/separators".into());
+
+        cache.store(&key, &val_a, Duration::from_secs(100)).unwrap();
+        cache_scoped.store(&key, &val_b, Duration::from_secs(100)).unwrap();
+
+        let present = cache.lookup::<_, String>(&key, Duration::from_secs(20)).unwrap();
+        assert_eq!(present.unwrap().0, val_a);
+        let present_scoped = cache_scoped.lookup::<_, String>(&key, Duration::from_secs(20)).unwrap();
+        assert_eq!(present_scoped.unwrap().0, val_b);
+    }
+
+    #[test]
     fn cleanup() {
         let dir = TestDir::temp();
         let key = "foo".to_string();
