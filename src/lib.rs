@@ -935,7 +935,7 @@ mod cache_tests {
     }
 
     #[test]
-    fn scoped_fails_without_base64() {
+    fn scopes_support_special_chars() {
         let dir = TestDir::temp();
         let key = "foo".to_string();
         let val_a = "A".to_string();
