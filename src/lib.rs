@@ -28,6 +28,9 @@ use anyhow::{anyhow, Context, Error, Result};
 use serde::{Serialize, Deserialize};
 use serde::de::DeserializeOwned;
 
+use base64::{Engine as _, engine::general_purpose};
+
+
 #[cfg(feature="debug")]
 macro_rules! debug_msg {
     ($($arg:tt)*) => { eprintln!("bkt: {}", format!($($arg)*)) }
@@ -661,7 +664,7 @@ impl Cache {
 
     fn key_path(&self, key: &str) -> PathBuf {
         let file = match &self.scope {
-            Some(scope) => format!("{}.{}", scope, key),
+            Some(scope) => format!("{}.{}", general_purpose::STANDARD_NO_PAD.encode(scope), key),
             None => key.into(),
         };
         self.key_dir().join(file)
@@ -921,6 +924,24 @@ mod cache_tests {
         let val_b = "B".to_string();
         let cache = Cache::new(dir.root());
         let cache_scoped = Cache::new(dir.root()).scoped("scope".into());
+
+        cache.store(&key, &val_a, Duration::from_secs(100)).unwrap();
+        cache_scoped.store(&key, &val_b, Duration::from_secs(100)).unwrap();
+
+        let present = cache.lookup::<_, String>(&key, Duration::from_secs(20)).unwrap();
+        assert_eq!(present.unwrap().0, val_a);
+        let present_scoped = cache_scoped.lookup::<_, String>(&key, Duration::from_secs(20)).unwrap();
+        assert_eq!(present_scoped.unwrap().0, val_b);
+    }
+
+    #[test]
+    fn scopes_support_special_chars() {
+        let dir = TestDir::temp();
+        let key = "foo".to_string();
+        let val_a = "A".to_string();
+        let val_b = "B".to_string();
+        let cache = Cache::new(dir.root());
+        let cache_scoped = Cache::new(dir.root()).scoped("/scope/with/path/separators".into());
 
         cache.store(&key, &val_a, Duration::from_secs(100)).unwrap();
         cache_scoped.store(&key, &val_b, Duration::from_secs(100)).unwrap();
