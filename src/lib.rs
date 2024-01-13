@@ -782,7 +782,7 @@ impl Cache {
 
             // First delete stale data files
             debug_msg!("cleanup data {}", &self.data_dir().display());
-            if let Ok(data_dir_iter) = std::fs::read_dir(&self.data_dir()) {
+            if let Ok(data_dir_iter) = std::fs::read_dir(self.data_dir()) {
                 for entry in data_dir_iter {
                     let ttl_dir = entry?.path();
                     let ttl = Duration::from_secs(
@@ -800,7 +800,7 @@ impl Cache {
 
             // Then delete broken symlinks
             debug_msg!("cleanup keys {}", &self.key_dir().display());
-            if let Ok(key_dir_iter) = std::fs::read_dir(&self.key_dir()) {
+            if let Ok(key_dir_iter) = std::fs::read_dir(self.key_dir()) {
                 for entry in key_dir_iter {
                     let symlink = entry?.path();
                     // This reads as if we're deleting files that no longer exist, but what it really
