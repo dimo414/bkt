@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::io::{self, stderr, stdout, Write};
 use std::path::PathBuf;
 use std::process::{Command, exit, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -117,7 +117,7 @@ fn run(cli: Cli) -> Result<i32> {
             &command, ttl, DisregardBrokenPipe(Box::new(stdout())), DisregardBrokenPipe(Box::new(stderr())))?;
         if let Some(stale) = stale {
             if let bkt::CacheStatus::Hit(cached_at) = status {
-                if (Instant::now() - cached_at) > stale {
+                if cached_at.elapsed().unwrap_or(Duration::MAX) > stale {
                     force_update_async()?;
                 }
             }

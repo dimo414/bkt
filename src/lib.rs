@@ -22,7 +22,7 @@ use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufReader, ErrorKind, BufWriter, Write, Read};
 use std::path::{PathBuf, Path};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, Context, Error, Result};
 use serde::{Serialize, Deserialize};
@@ -693,8 +693,8 @@ impl Cache {
         let found: CacheEntry<K, V> = Cache::deserialize(reader)?;
         // Discard data that is too old
         let mtime = std::fs::metadata(&path)?.modified()?;
-        let elapsed = mtime.elapsed();
-        if elapsed.is_err() || elapsed.unwrap() > max_age {
+        let elapsed = mtime.elapsed().unwrap_or(Duration::MAX);
+        if elapsed > max_age {
             debug_msg!("lookup {} expired", path.display());
             return match std::fs::remove_file(&path) {
                 Ok(_) => Ok(None),
@@ -761,7 +761,7 @@ impl Cache {
 
     fn cleanup(&self) -> Result<()> {
         fn delete_stale_file(file: &Path, ttl: Duration) -> Result<()> {
-            let age = std::fs::metadata(file)?.modified()?.elapsed()?;
+            let age = std::fs::metadata(file)?.modified()?.elapsed().unwrap_or(Duration::MAX);
             if age > ttl {
                 std::fs::remove_file(file)?;
             }
@@ -773,7 +773,7 @@ impl Cache {
             // Don't bother if cleanup has been attempted recently
             let last_attempt_file = self.cache_dir.join("last_cleanup");
             if let Ok(metadata) = last_attempt_file.metadata() {
-                if metadata.modified()?.elapsed()? < Duration::from_secs(30) {
+                if metadata.modified()?.elapsed().unwrap_or(Duration::MAX) < Duration::from_secs(30) {
                     debug_msg!("cleanup skip recent");
                     return Ok(());
                 }
@@ -974,7 +974,7 @@ mod cache_tests {
 #[derive(Debug, Copy, Clone)]
 pub enum CacheStatus {
     /// Command was found in the cache. Contains the time the returned invocation was cached.
-    Hit(Instant),
+    Hit(SystemTime),
     /// Command was not found in the cache and was executed. Contains the execution time of the
     /// subprocess.
     Miss(Duration),
@@ -1118,7 +1118,7 @@ impl Bkt {
         use std::process::Stdio;
         let command = command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let start = Instant::now();
+        let start = std::time::Instant::now();
         let mut child = command.spawn().with_context(|| format!("Failed to run command: {:?}", command))?;
 
         let child_out = child.stdout.take().ok_or(anyhow!("cannot attach to child stdout"))?;
@@ -1209,13 +1209,13 @@ impl Bkt {
                     stdout.write_all(inv.stdout())?;
                     stderr.write_all(inv.stderr())?;
                 }
-                (inv, CacheStatus::Hit(Instant::now() - mtime.elapsed()?))
+                (inv, CacheStatus::Hit(mtime))
             },
             None => {
                 let cleanup_hook = self.maybe_cleanup_once();
-                let start = Instant::now();
+                let start = std::time::Instant::now();
                 let result = Bkt::execute_subprocess(&command, output_streams).context("Subprocess execution failed")?;
-                let runtime = Instant::now() - start;
+                let runtime = start.elapsed();
                 if command.persist_failures || result.exit_code == 0 {
                     self.cache.store(&command, &result, ttl).context("Cache write failed")?;
                 }
@@ -1277,14 +1277,14 @@ impl Bkt {
     {
         let command = command.try_into()?;
         let cleanup_hook = self.maybe_cleanup_once();
-        let start = Instant::now();
+        let start = std::time::Instant::now();
         let result = Bkt::execute_subprocess(&command, output_streams).context("Subprocess execution failed")?;
-        let elapsed = Instant::now() - start;
+        let runtime = start.elapsed();
         if command.persist_failures || result.exit_code == 0 {
             self.cache.store(&command, &result, ttl).context("Cache write failed")?;
         }
         Bkt::join_cleanup_thread(cleanup_hook);
-        Ok((result, elapsed))
+        Ok((result, runtime))
     }
 
     /// Clean the cache in the background on a cache-miss; this will usually
