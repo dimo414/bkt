@@ -5,6 +5,7 @@ use std::process::{Command, exit, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::Parser;
 
 use bkt::{CommandDesc, Bkt};
@@ -136,7 +137,7 @@ struct Cli {
     command: Vec<OsString>,
 
     /// Duration the cached result will be valid for
-    #[arg(long, value_name = "DURATION", default_value = "60s", visible_alias = "time-to-live", env = "BKT_TTL")]
+    #[arg(long, value_name = "DURATION", visible_alias = "time-to-live", env = "BKT_TTL")]
     ttl: humantime::Duration,
 
     /// Duration after which the result will be asynchronously refreshed
@@ -186,7 +187,19 @@ struct Cli {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    // TODO remove this suggestion in 0.9.0
+    let mut cli = Cli::try_parse();
+    if let Err(err) = cli.as_mut() {
+        if matches!(err.kind(), ErrorKind::MissingRequiredArgument) {
+            // https://github.com/clap-rs/clap/discussions/5318
+            err.insert(ContextKind::Suggested, ContextValue::StyledStrs(vec![[
+                "Prior to 0.8.0 --ttl was optional, and defaulted to 60 seconds.",
+                "To preserve this behavior pass `--ttl=1m` or set `BKT_TTL=1m` in your environment."
+            ].join(" ").into()]));
+        }
+        err.exit();
+    }
+    let cli = cli.expect("Not Err");
 
     match run(cli) {
         Ok(code) => exit(code),

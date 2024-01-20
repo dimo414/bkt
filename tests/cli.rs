@@ -32,6 +32,8 @@ mod cli {
         }
         assert!(path.exists(), "Could not find bkt binary in {:?}", dir);
         let mut bkt = Command::new(&path);
+        // Set a TTL here rather than in every test - tests that care about the TTL should override
+        bkt.env("BKT_TTL", "5s");
         bkt.env("BKT_TMPDIR", cache_dir.as_ref().as_os_str());
         bkt
     }
@@ -116,7 +118,7 @@ mod cli {
     fn help() {
         let dir = TestDir::temp();
         let out = succeed(bkt(dir.path("cache")).arg("--help"));
-        assert!(out.contains("bkt [OPTIONS] -- <COMMAND>..."));
+        assert!(out.contains("bkt [OPTIONS] --ttl <DURATION> -- <COMMAND>..."), "Was:\n---\n{}\n---", out);
     }
 
     #[test]
@@ -142,16 +144,16 @@ mod cli {
         let dir = TestDir::temp();
         let file = dir.path("file");
         let args = ["--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
-        let first_result = succeed(bkt(dir.path("cache")).args(args));
+        let first_result = succeed(bkt(dir.path("cache")).arg("--ttl=1m").args(args));
         assert_eq!(first_result, "1");
 
         // Slightly stale is still cached
         make_dir_stale(dir.path("cache"), Duration::from_secs(10)).unwrap();
-        let subsequent_result = succeed(bkt(dir.path("cache")).args(args));
+        let subsequent_result = succeed(bkt(dir.path("cache")).arg("--ttl=1m").args(args));
         assert_eq!(first_result, subsequent_result);
 
         make_dir_stale(dir.path("cache"), Duration::from_secs(120)).unwrap();
-        let after_stale_result = succeed(bkt(dir.path("cache")).args(args));
+        let after_stale_result = succeed(bkt(dir.path("cache")).arg("--ttl=1m").args(args));
         assert_eq!(after_stale_result, "2");
 
         // Respects BKT_TTL env var (other tests cover --ttl)
