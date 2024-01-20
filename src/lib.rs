@@ -685,6 +685,14 @@ impl Cache {
                 debug_msg!("lookup {} not found", path.display());
                 return Ok(None);
             }
+            if e.kind() == ErrorKind::PermissionDenied {
+                debug_msg!("lookup {} permission denied", path.display());
+                // Improve error message since the default cache location is not user-specific, see #35
+                file.with_context(|| format!(
+                    "Could not access cached data in {}; note that cache directories should not be shared by multiple users",
+                    self.cache_dir.display()))?;
+                unreachable!();
+            }
         }
         // Missing file is OK; other errors get propagated to the caller
         let reader = BufReader::new(file.context("Failed to access cache file")?);
@@ -1040,7 +1048,8 @@ impl Bkt {
         //      See https://stackoverflow.com/q/57951893/113632
         let cache_dir = root_dir
             .join(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")));
-        Bkt::restrict_dir(&cache_dir)?;
+        Bkt::restrict_dir(&cache_dir)
+            .with_context(|| format!("Failed to set permissions on {}", cache_dir.display()))?;
         Ok(Bkt {
             cache: Cache::new(&cache_dir),
             cleanup_on_refresh: true,
