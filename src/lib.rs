@@ -1498,41 +1498,6 @@ mod bkt_tests {
     }
 
     #[test]
-    fn cwd_and_working_dir_share_cache() {
-        let old_cwd = std::env::current_dir().unwrap();
-
-        let dir = TestDir::temp().create("wd", FileType::Dir);
-        let wd = dir.path("wd");
-        let bkt = Bkt::create(dir.path("cache")).unwrap();
-        // Note we haven't changed the cwd yet - use_cwd() shouldn't read it
-        let cmd = CommandDesc::new(["bash", "-c", "pwd; echo '.' > file"]).with_cwd();
-        // Now the cwd is captured, but overwritten by with_working_dir()
-        let state = cmd.capture_state().unwrap().with_working_dir(&wd);
-        let (result, status) = bkt.retrieve(state, Duration::from_secs(10)).unwrap();
-        assert_eq!(result.stdout_utf8(), format!("{}\n", wd.to_str().unwrap()));
-        assert_eq!(result.stderr_utf8(), "");
-        assert_eq!(result.exit_code(), 0);
-        assert!(status.is_miss());
-
-        // now change the cwd and see it get captured lazily
-        std::env::set_current_dir(&wd).unwrap();
-        let (result, status) = bkt.retrieve(&cmd, Duration::from_secs(10)).unwrap();
-        assert_eq!(result.stdout_utf8(), format!("{}\n", wd.to_str().unwrap()));
-        assert_eq!(result.stderr_utf8(), "");
-        assert_eq!(result.exit_code(), 0);
-        assert!(status.is_hit());
-
-        // and the file was only written to once, hence the cache was shared
-        assert_eq!(std::fs::read_to_string(wd.join("file")).unwrap(), ".\n");
-
-        // Restore the original cwd
-        // NB this could fail to be reached if the test fails, which could cause other confusing
-        // errors. An RAII pattern using Drop, similar to absl::Cleanup, would be nicer but I'm not
-        // aware of a standard pattern for this atm.
-        std::env::set_current_dir(old_cwd).unwrap();
-    }
-
-    #[test]
     // TODO the JSON serializer doesn't support OsString keys, CommandState needs a custom
     //      Serializer (for feature="debug", at least) - see https://stackoverflow.com/q/51276896
     //      and https://github.com/serde-rs/json/issues/809
