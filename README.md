@@ -37,19 +37,19 @@ Package manager support is being tracked
 ## Usage
 
 ```
-bkt [--ttl=DURATION] [--stale=DURATION] [--cwd] [--env=ENV ...] [--modtime=FILE ...] [--scope=SCOPE] [--discard-failures] [--warm|--force] -- <command>...
+bkt --ttl=DURATION [--stale=DURATION] [--cwd] [--env=ENV ...] [--modtime=FILE ...] [--scope=SCOPE] [--discard-failures] [--warm|--force] -- <command>...
 ```
 
-The easiest way to use `bkt` is to simply prefix the command you intend to
-cache with `bkt --`, for example:
+`bkt` is easy to start using - simply prefix the command you intend to cache
+with `bkt --ttl=[some duration] --`, for example:
 
 ```shell
 # Execute and cache an invocation of 'date +%s.%N'
-$ bkt -- date +%s.%N
+$ bkt --ttl=1m -- date +%s.%N
 1631992417.080884000
 
 # A subsequent invocation reuses the same cached output
-$ bkt -- date +%s.%N
+$ bkt --ttl=1m -- date +%s.%N
 1631992417.080884000
 ```
 
@@ -61,11 +61,9 @@ as if the command had been run again.
 ### Cache Lifespan
 
 Two flags, `--ttl` and `--stale`, configure how long cached data is preserved.
-By default `bkt` uses a TTL (Time to Live) of 60 seconds, meaning cached
-data older than sixty seconds will be discarded and the backing command re-run.
-Passing a different value, such as `--ttl=1d`, will change how long the cached
-data is considered valid. The default TTL can be overridden by defining a
-`BKT_TTL` environment variable.
+The TTL (Time to Live) specifies how long cached data will be used. Once the
+TTL expires the cached data will be discarded and the backing command re-run.
+A TTL can also be configured by setting a `BKT_TTL` environment variable.
 
 When the data expires `bkt` has to re-execute the command synchronously, which
 can introduce unexpected slowness. To avoid this, pass `--stale` with a shorter
@@ -89,13 +87,13 @@ invocations are cached separately.
 For example, attempting to cache `pwd` will not work as expected by default:
 
 ```shell
-$ $ bkt -- pwd
+$ $ bkt --ttl=1m -- pwd
 /tmp/foo
 
 $ cd ../bar
 
 # Cached output for 'pwd' is reused even though the directory has changed
-$ bkt -- pwd
+$ bkt --ttl=1m -- pwd
 /tmp/foo
 ```
 
@@ -103,12 +101,12 @@ To have `bkt` key off the current working directory in addition to the command
 line arguments pass `--cwd`:
 
 ```shell
-$ bkt --cwd -- pwd
+$ bkt --cwd --ttl=1m -- pwd
 /tmp/foo
 
 $ cd ../bar
 
-$ bkt --cwd -- pwd
+$ bkt --cwd --ttl=1m -- pwd
 /tmp/bar
 ```
 
@@ -151,11 +149,11 @@ To do so pass `--scope=...` with a sufficiently unique argument, such as a fixed
 label for the calling program, the current process ID, or a timestamp.
 
 ```shell
-$ bkt -- date +%s.%N
+$ bkt --ttl=1m -- date +%s.%N
 1631992417.080884000
 
 # Changing the scope causes the command to be cached separately
-$ bkt --scope=foo -- date +%s.%N
+$ bkt --scope=foo --ttl=1m -- date +%s.%N
 1631992418.010562000
 ```
 
@@ -268,7 +266,7 @@ else
 fi
 
 # Now you can call bkt (the function) just like you'd call bkt (the binary):
-bkt -- expensive_cmd ...
+bkt --ttl=1m -- expensive_cmd ...
 ```
 
 ### Decorating commands with `bkt` in shell scripts
