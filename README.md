@@ -119,10 +119,10 @@ different values for any of the given variables will be cached separately.
 
 #### File Modifications
 
-It is also possible to have `bkt` check the last-modified time of one or more
-files and include this in the cache key using `--modtime`. For instance passing
+`bkt` can also check the last-modified time of one or more files and include
+this in the cache key using `--modtime`. For instance passing
 `--modtime=/etc/passwd` would cause the backing command to be re-executed any
-time `/etc/passwd` is modified.
+time `/etc/passwd` is modified even if the TTL has not expired.
 
 ### Refreshing Manually
 
@@ -184,20 +184,30 @@ flag and instead make the client robust to occasional failures.
 <a name="cache_dir"></a>
 ### Changing the Cache Directory
 
-By default, cached data is stored under `/tmp` or a similar temporary directory;
-this can be customized via the `--cache-dir` flag or by defining a
-`BKT_CACHE_DIR` environment variable.
+By default, cached data is stored under your system's temporary directory
+(typically `/tmp` on Linux).
 
-If a `BKT_TMPDIR` environment variable is defined it wil be used instead of the
-system's temporary directory. Although `BKT_TMPDIR` and `BKT_CACHE_DIR` have
-similar effects `BKT_TMPDIR` is intended to be used to configure the global
-cache location (e.g. by declaring it in your `.bashrc` or similar), while
-`--cache-dir`/`BKT_CACHE_DIR` should be used to customize the cache location
-for a given set of invocations that shouldn't use the default cache directory.
+You may want to use a different location for certain commands, for instance to
+be able to easily delete the cached data as soon as it's no longer needed. You
+can specify a custom cache directory via the `--cache-dir` flag or by defining
+a `BKT_CACHE_DIR` environment variable.
 
 Note that the choice of directory can affect `bkt`'s performance: if the cache
-is stored under a [`tmpfs`](https://en.wikipedia.org/wiki/Tmpfs) or solid-state
-partition it will be significantly faster than caching to a spinning disk.
+directory is on a [`tmpfs`](https://en.wikipedia.org/wiki/Tmpfs) or solid-state
+partition it will be significantly faster than one using a spinning disk.
+
+If your system's temporary directory is not a good choice for the default cache
+location (e.g. it is not a `tmpfs`) you can specify a different location by
+defining a `BKT_TMPDIR` environment variable (for example in your `.bashrc`).
+These two environment variables, `BKT_TMPDIR` and `BKT_CACHE_DIR`, have similar
+effects but `BKT_TMPDIR` should be used to configure the system-wide default,
+and `--cache-dir`/`BKT_CACHE_DIR` used to override it.
+
+`bkt` periodically prunes stale data from its cache, but it also assumes the
+operating system will empty its temporary storage from time to time (for `/tmp`
+this typically happens on reboot). If you opt to use a directory that the
+system does not maintain, such as `~/.cache`, you may want to manually delete
+the cache directory on occasion, such as when upgrading `bkt`.
 
 ## Security and Privacy
 
@@ -206,7 +216,7 @@ directory is created with `700` permissions, meaning only the current user can
 access it, but this is not foolproof.
 
 You can customize the cache directory (see [above](#cache_dir)) to a location
-you trust such as `~/.bkt`, but note that your home directory may be slower than
+you trust such as `~/.cache`, but note that your home directory may be slower than
 the temporary directory selected by default.
 
 In general, if you are not the only user of your system it's wise to configure

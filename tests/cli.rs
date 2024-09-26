@@ -38,6 +38,18 @@ mod cli {
         bkt
     }
 
+    fn sudo(cmd: &mut Command) -> Command {
+        let mut sudo = Command::new("sudo");
+        sudo.args(&["-n", "-E"]).arg(cmd.get_program()).args(cmd.get_args());
+        for (key, value) in cmd.get_envs() {
+            match value {
+                Some(value) => sudo.env(key, value),
+                None => sudo.env_remove(key),
+            };
+        }
+        sudo
+    }
+
     #[derive(Eq, PartialEq, Debug)]
     struct CmdResult {
         out: String,
@@ -276,6 +288,43 @@ mod cli {
 
         // But cached success is still returned
         assert_eq!(succeed(bkt(dir.path("cache")).args(args)), "1");
+    }
+
+    // depends on sudo and libc::geteuid(), but also on Windows we don't split by user presently anyways
+    #[cfg(unix)]
+    #[test]
+    fn cache_dirs_multi_user() {
+        let dir = TestDir::temp();
+        let file = dir.path("file");
+        let args = ["--", "bash", "-c", COUNT_INVOCATIONS, "arg0", file.to_str().unwrap()];
+
+        // Skip the test if we can't run `sudo bkt --version`
+        // Calling into sudo like this isn't great, but it's an easy and reasonably reliable way to
+        // run bkt as two different users. It generally won't run on CI but at least it provides
+        // some manual test coverage.
+        if unsafe { libc::geteuid() } == 0 {
+            // https://github.com/rust-lang/rust/issues/68007 tracking skippable tests
+            eprint!("Running tests as root already, skipping");
+            return;
+        }
+        let mut sudo_bkt = sudo(bkt(dir.path("cache")).arg("--version"));
+        if run(&mut sudo_bkt).status.unwrap_or(127) != 0 {
+            // https://github.com/rust-lang/rust/issues/68007 tracking skippable tests
+            eprint!("Couldn't run `sudo bkt`, skipping");
+            return;
+        }
+
+        // can call bkt as both current and super-user
+        let user_call = succeed(bkt(dir.path("cache")).args(args));
+        assert_eq!(user_call, "1");
+
+        let sudo_call = succeed(&mut sudo(bkt(dir.path("cache")).args(args)));
+        assert_eq!(sudo_call, "2");
+
+        // cached separately
+        assert_eq!(user_call, succeed(bkt(dir.path("cache")).args(args)));
+
+        assert_eq!(sudo_call, succeed(&mut sudo(bkt(dir.path("cache")).args(args))));
     }
 
     #[test]

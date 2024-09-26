@@ -999,6 +999,24 @@ impl CacheStatus {
     fn is_miss(&self) -> bool { match self { CacheStatus::Hit(_) => false, CacheStatus::Miss(_) => true, } }
 }
 
+/// Returns, if available on this platform, an identifier that uniquely represents the current user.
+///
+/// This value is only used to disambiguate cache directories in order to support multiple users.
+/// It should not be used to authenticate or validate a caller has access to a given cache entry,
+/// OS-level mechanisms such as directory permissions must be used instead.
+//
+// cfg() options drawn from the set of libc environments with a geteuid() function, see
+// https://github.com/search?q=repo%3Arust-lang%2Flibc+geteuid%28%29&type=code and
+// https://github.com/rust-lang/libc/blob/main/src/lib.rs
+#[cfg(any(unix, target_os = "fuchsia", target_os = "vxworks"))]
+fn user_id() -> Option<libc::uid_t> {
+    // SAFETY: geteuid is documented to "always [be] successful and never modify errno."
+    Some(unsafe { libc::geteuid() })
+}
+
+#[cfg(not(any(unix, target_os = "fuchsia", target_os = "vxworks")))]
+fn user_id() -> Option<u32> { None }
+
 /// This struct is the main API entry point for the `bkt` library, allowing callers to invoke and
 /// cache subprocesses for later reuse.
 ///
@@ -1046,8 +1064,9 @@ impl Bkt {
         // Note the cache is invalidated when the minor version changes
         // TODO use separate directories per user, like bash-cache
         //      See https://stackoverflow.com/q/57951893/113632
-        let cache_dir = root_dir
-            .join(format!("bkt-{}.{}-cache", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")));
+        let user_suffix = user_id().map(|id| format!("-u{}", id)).unwrap_or_else(String::new);
+        let dir_name = format!("bkt-{}.{}-cache{}", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR"), user_suffix);
+        let cache_dir = root_dir.join(dir_name);
         Bkt::restrict_dir(&cache_dir)
             .with_context(|| format!("Failed to set permissions on {}", cache_dir.display()))?;
         Ok(Bkt {
