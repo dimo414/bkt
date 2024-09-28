@@ -2,7 +2,7 @@
 name = "bkt"
 # When updating the version number tag the commit in git
 # https://rust-lang.github.io/api-guidelines/documentation.html#release-notes-document-all-significant-changes-c-relnotes
-version = "0.8.1"
+version = "0.8.2"
 authors = ["Michael Diamond <dimo414@gmail.com>"]
 description = "CLI and Rust library for caching subprocess invocations"
 repository = "https://github.com/dimo414/bkt"
