@@ -257,26 +257,22 @@ the user starts navigating the selector.
 ### Using `bkt` only if installed
 
 You may want to distribute shell scripts that utilize `bkt` without requiring
-every user also install `bkt`. By wrapping `bkt` in a shell function your script
-can cleanly invoke `bkt` if available without complicating your users' workflow.
-Of course if they choose to install `bkt` they'll get a faster script as a
-result!
+every user also install it. By falling back to a no-op shell function when `bkt`
+is not available your script can take advantage of it opportunistically without
+complicating your users' workflow. Of course if they choose to install `bkt`
+they'll get a faster script as a result!
 
 ```shell
 # Cache commands using bkt if installed
-if command -v bkt >&/dev/null; then
-  bkt() { command bkt "$@"; }
-else
+if ! command -v bkt >&/dev/null; then
   # If bkt isn't installed skip its arguments and just execute directly.
-  # Optionally write a msg to stderr suggesting users install bkt.
   bkt() {
     while [[ "$1" == --* ]]; do shift; done
     "$@"
   }
+  # Optionally, write a msg to stderr suggesting users install bkt.
+  echo "Tip: install https://github.com/dimo414/bkt for faster performance" >&2
 fi
-
-# Now you can call bkt (the function) just like you'd call bkt (the binary):
-bkt --ttl=1m -- expensive_cmd ...
 ```
 
 ### Decorating commands with `bkt` in shell scripts
