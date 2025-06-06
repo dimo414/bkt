@@ -4,6 +4,7 @@
 [![crates.io](https://img.shields.io/crates/v/bkt?logo=rust)](https://crates.io/crates/bkt)
 [![docs.rs](https://img.shields.io/docsrs/bkt?label=docs.rs)](https://docs.rs/bkt)
 [![build status](https://img.shields.io/github/actions/workflow/status/dimo414/bkt/rust.yml?branch=master)](https://github.com/dimo414/bkt/actions)
+[![dependencies](https://img.shields.io/deps-rs/bkt/latest)](https://deps.rs/crate/bkt)
 [![issues](https://img.shields.io/github/issues/dimo414/bkt)](https://github.com/dimo414/bkt/issues)
 [![license](https://img.shields.io/github/license/dimo414/bkt)](https://github.com/dimo414/bkt/blob/master/LICENSE)
 
