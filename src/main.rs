@@ -57,11 +57,11 @@ fn force_update_async() -> Result<()> {
         Ok(path) => Command::new(path),
         Err(_) => Command::new(arg0),
     };
-    // Discard stdout/err so the calling process doesn't wait for them to close.
+    // Discard stdin/out/err so the calling process doesn't wait for them to close.
     // Intentionally drop the returned Child; after this process exits the
     // child process will continue running in the background.
     command.arg("--force").args(args.filter(|a| a != "--warm"))
-        .stdout(Stdio::null()).stderr(Stdio::null())
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .spawn().context("Failed to start background process")?;
     Ok(())
 }
